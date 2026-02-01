@@ -1,7 +1,6 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+
+import 'src/actual_api.dart';
 
 void main() {
   runApp(const MyApp());
@@ -15,42 +14,100 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Actual Native',
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: const ActualHomePage(),
+      home: const RootScreen(),
     );
   }
 }
 
-class ActualHomePage extends StatefulWidget {
-  const ActualHomePage({super.key});
+class RootScreen extends StatefulWidget {
+  const RootScreen({super.key});
 
   @override
-  State<ActualHomePage> createState() => _ActualHomePageState();
+  State<RootScreen> createState() => _RootScreenState();
 }
 
-class _ActualHomePageState extends State<ActualHomePage> {
-  static const String defaultBaseUrl = 'http://192.168.1.182:5006';
+class _RootScreenState extends State<RootScreen> {
+  final _baseUrlController = TextEditingController(text: 'http://192.168.1.182:5006');
+  final _passwordController = TextEditingController();
 
-  final _baseUrlController = TextEditingController(text: defaultBaseUrl);
+  ActualApi? _api;
   bool _loading = false;
   String? _error;
-  Map<String, dynamic>? _serverInfo;
 
-  Future<void> _fetchServerInfo() async {
+  bool _bootstrapped = true;
+  List<dynamic> _budgets = [];
+
+  Future<void> _connect() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _budgets = [];
+    });
+
+    try {
+      final api = ActualApi(baseUrl: _baseUrlController.text.trim());
+      final info = await api.needsBootstrap();
+      final data = info['data'] as Map<String, dynamic>?;
+      final bootstrapped = data?['bootstrapped'] as bool? ?? true;
+      setState(() {
+        _api = api;
+        _bootstrapped = bootstrapped;
+      });
+    } catch (e) {
+      setState(() => _error = 'Connect failed: $e');
+    } finally {
+      setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _bootstrapIfNeeded() async {
+    final api = _api;
+    if (api == null) return;
+    final pwd = _passwordController.text;
+    if (pwd.isEmpty) {
+      setState(() => _error = 'Enter a password');
+      return;
+    }
+
     setState(() {
       _loading = true;
       _error = null;
     });
 
     try {
-      final uri = Uri.parse('${_baseUrlController.text}/health');
-      final response = await http.get(uri);
-      if (response.statusCode != 200) {
-        throw Exception('Server returned ${response.statusCode}');
-      }
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      setState(() => _serverInfo = data);
+      await api.bootstrap(password: pwd);
+      final info = await api.needsBootstrap();
+      final data = info['data'] as Map<String, dynamic>?;
+      final bootstrapped = data?['bootstrapped'] as bool? ?? true;
+      setState(() => _bootstrapped = bootstrapped);
     } catch (e) {
-      setState(() => _error = 'Failed to reach server: $e');
+      setState(() => _error = 'Bootstrap failed: $e');
+    } finally {
+      setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loginAndLoadBudgets() async {
+    final api = _api;
+    if (api == null) return;
+    final pwd = _passwordController.text;
+    if (pwd.isEmpty) {
+      setState(() => _error = 'Enter a password');
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _error = null;
+      _budgets = [];
+    });
+
+    try {
+      await api.login(password: pwd);
+      final budgets = await api.listUserFiles();
+      setState(() => _budgets = budgets);
+    } catch (e) {
+      setState(() => _error = 'Login/load failed: $e');
     } finally {
       setState(() => _loading = false);
     }
@@ -58,67 +115,78 @@ class _ActualHomePageState extends State<ActualHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final info = _serverInfo;
+    final api = _api;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Actual Native'),
-      ),
+      appBar: AppBar(title: const Text('Actual Native')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Connect to your Actual server',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 12),
             TextField(
               controller: _baseUrlController,
               decoration: const InputDecoration(
-                labelText: 'Server base URL',
-                hintText: 'http://192.168.1.182:5006',
+                labelText: 'Actual server URL',
                 border: OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _loading ? null : _fetchServerInfo,
-              icon: const Icon(Icons.sync),
-              label: const Text('Check server'),
+            const SizedBox(height: 10),
+            FilledButton(
+              onPressed: _loading ? null : _connect,
+              child: const Text('Connect'),
             ),
-            const SizedBox(height: 16),
-            if (_loading) const LinearProgressIndicator(),
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-            ],
-            if (info != null) ...[
-              const SizedBox(height: 12),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Server response',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 8),
-                      Text('status: ${info['status'] ?? 'unknown'}'),
-                      if (info.containsKey('details'))
-                        Text('details: ${info['details']}'),
-                      if (info.containsKey('version'))
-                        Text('version: ${info['version']}'),
-                    ],
-                  ),
+            const SizedBox(height: 12),
+            if (api != null) ...[
+              TextField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Password',
+                  border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 10),
+              if (!_bootstrapped)
+                FilledButton.icon(
+                  onPressed: _loading ? null : _bootstrapIfNeeded,
+                  icon: const Icon(Icons.construction),
+                  label: const Text('Bootstrap server (set password)'),
+                ),
+              FilledButton.icon(
+                onPressed: _loading ? null : _loginAndLoadBudgets,
+                icon: const Icon(Icons.login),
+                label: const Text('Login + Load Budgets'),
+              ),
             ],
-            const Spacer(),
-            Text(
-              'Next: auth, budgets, accounts, transactions',
-              style: TextStyle(color: Colors.grey.shade600),
+            const SizedBox(height: 12),
+            if (_loading) const LinearProgressIndicator(),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+            ],
+            const SizedBox(height: 12),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _budgets.length,
+                itemBuilder: (context, idx) {
+                  final b = _budgets[idx] as Map<String, dynamic>;
+                  final name = (b['name'] as String?) ?? '(unnamed)';
+                  final fileId = (b['fileId'] as String?) ?? '';
+                  final deleted = (b['deleted'] as int?) == 1;
+                  return ListTile(
+                    title: Text(name),
+                    subtitle: Text(fileId),
+                    trailing: deleted ? const Text('DELETED') : const Icon(Icons.chevron_right),
+                    onTap: () {
+                      // Placeholder: next step is syncing file + showing accounts/transactions.
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Selected budget: $name (next: accounts/transactions)')),
+                      );
+                    },
+                  );
+                },
+              ),
             ),
           ],
         ),
