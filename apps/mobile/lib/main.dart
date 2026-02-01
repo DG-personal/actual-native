@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'src/actual_api.dart';
+import 'src/screens/budget_detail_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -178,12 +179,21 @@ class _RootScreenState extends State<RootScreen> {
                     title: Text(name),
                     subtitle: Text(fileId),
                     trailing: deleted ? const Text('DELETED') : const Icon(Icons.chevron_right),
-                    onTap: () {
-                      // Placeholder: next step is syncing file + showing accounts/transactions.
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Selected budget: $name (next: accounts/transactions)')),
-                      );
-                    },
+                    onTap: deleted
+                        ? null
+                        : () {
+                            final api = _api;
+                            if (api == null) return;
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => BudgetDetailScreen(
+                                  api: api,
+                                  fileId: fileId,
+                                  name: name,
+                                ),
+                              ),
+                            );
+                          },
                   );
                 },
               ),

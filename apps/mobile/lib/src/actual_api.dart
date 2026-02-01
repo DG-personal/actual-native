@@ -50,6 +50,33 @@ class ActualApi {
     return data ?? [];
   }
 
+  Future<Map<String, dynamic>> getUserFileInfo({required String fileId}) async {
+    if (token == null) throw Exception('Not logged in');
+    final res = await http.get(
+      _u('/sync/get-user-file-info'),
+      headers: {
+        'x-actual-token': token!,
+        'x-actual-file-id': fileId,
+      },
+    );
+    return _decodeJson(res);
+  }
+
+  Future<int> downloadUserFileSize({required String fileId}) async {
+    if (token == null) throw Exception('Not logged in');
+    final res = await http.get(
+      _u('/sync/download-user-file'),
+      headers: {
+        'x-actual-token': token!,
+        'x-actual-file-id': fileId,
+      },
+    );
+    if (res.statusCode >= 400) {
+      throw Exception('Download failed (${res.statusCode})');
+    }
+    return res.bodyBytes.length;
+  }
+
   Map<String, dynamic> _decodeJson(http.Response res) {
     final body = res.body;
     final json = jsonDecode(body) as Map<String, dynamic>;
