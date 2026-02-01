@@ -28,7 +28,8 @@ class RootScreen extends StatefulWidget {
 }
 
 class _RootScreenState extends State<RootScreen> {
-  final _baseUrlController = TextEditingController(text: 'http://192.168.1.182:5006');
+  // Android emulator reaches the host machine via 10.0.2.2
+  final _baseUrlController = TextEditingController(text: 'http://10.0.2.2:5006');
   final _passwordController = TextEditingController();
 
   ActualApi? _api;
