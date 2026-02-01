@@ -11,13 +11,13 @@ class ActualApi {
   Uri _u(String path) => Uri.parse('$baseUrl$path');
 
   Future<Map<String, dynamic>> needsBootstrap() async {
-    final res = await http.get(_u('/needs-bootstrap'));
+    final res = await http.get(_u('/account/needs-bootstrap'));
     return _decodeJson(res);
   }
 
   Future<Map<String, dynamic>> bootstrap({required String password}) async {
     final res = await http.post(
-      _u('/bootstrap'),
+      _u('/account/bootstrap'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'password': password}),
     );
@@ -26,7 +26,7 @@ class ActualApi {
 
   Future<void> login({required String password}) async {
     final res = await http.post(
-      _u('/login'),
+      _u('/account/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'password': password}),
     );
@@ -42,7 +42,7 @@ class ActualApi {
   Future<List<dynamic>> listUserFiles() async {
     if (token == null) throw Exception('Not logged in');
     final res = await http.get(
-      _u('/list-user-files'),
+      _u('/sync/list-user-files'),
       headers: {'x-actual-token': token!},
     );
     final json = _decodeJson(res);
