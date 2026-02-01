@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -96,6 +97,11 @@ class ActualApi {
   }
 
   Future<int> downloadUserFileSize({required String fileId}) async {
+    final bytes = await downloadUserFileBytes(fileId: fileId);
+    return bytes.length;
+  }
+
+  Future<Uint8List> downloadUserFileBytes({required String fileId}) async {
     if (token == null) throw Exception('Not logged in');
     final res = await http.get(
       _u('/sync/download-user-file'),
@@ -107,7 +113,7 @@ class ActualApi {
     if (res.statusCode >= 400) {
       throw Exception('Download failed (${res.statusCode})');
     }
-    return res.bodyBytes.length;
+    return res.bodyBytes;
   }
 
   Map<String, dynamic> _decodeJson(http.Response res) {
