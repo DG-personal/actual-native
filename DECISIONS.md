@@ -36,14 +36,6 @@ MVP is **usable**, meaning:
   - HULC timestamps / clock
   - state machine for reset/key mismatch
 
-### UX reference
-- Use **YNAB-inspired UX** patterns:
-  - fast add flow
-  - transaction-first daily loop
-  - clean register
-  - low-tap budgeting navigation
-  - (inspiration only; no branding/copy)
-
 ### Git workflow
 - Push incremental commits.
 - Create feature branches for larger work (e.g. `sync-bridge`) and open PRs for review.

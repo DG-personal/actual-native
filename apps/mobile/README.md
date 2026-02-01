@@ -29,7 +29,3 @@ The MVP must be **actually usable**, meaning:
 - Transactions register
 - Budget/categories view
 - Uses Actual’s real `/sync/sync` protocol (protobuf + CRDT message log), not only file download.
-
-## UX reference
-
-Design should take inspiration from **YNAB** for speed and low-tap daily workflows.

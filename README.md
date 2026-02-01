@@ -32,7 +32,7 @@ MVP is only considered done when the app can:
 ## Decisions / project notes
 
 See:
-- `DECISIONS.md` (high-level decisions: Flutter, Docker server, MVP definition, YNAB-inspired UX)
+- `DECISIONS.md` (high-level decisions: Flutter, Docker server, MVP definition)
 
 ## Repo structure
 
