@@ -29,7 +29,9 @@ class RootScreen extends StatefulWidget {
 
 class _RootScreenState extends State<RootScreen> {
   // Android emulator reaches the host machine via 10.0.2.2
+  // LAN fallback is usually http://192.168.1.182:5006
   final _baseUrlController = TextEditingController(text: 'http://10.0.2.2:5006');
+  final _serverHint = 'Android emulator: http://10.0.2.2:5006 | LAN: http://192.168.1.182:5006';
   final _passwordController = TextEditingController();
 
   ActualApi? _api;
@@ -128,9 +130,10 @@ class _RootScreenState extends State<RootScreen> {
           children: [
             TextField(
               controller: _baseUrlController,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Actual server URL',
-                border: OutlineInputBorder(),
+                helperText: _serverHint,
+                border: const OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 10),
