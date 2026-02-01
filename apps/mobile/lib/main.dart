@@ -1,7 +1,7 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
-import 'package:uni_links/uni_links.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'src/actual_api.dart';
@@ -36,7 +36,8 @@ class _RootScreenState extends State<RootScreen> {
   static const _appHost = 'callback';
   static const _openIdCbPath = '/openid-cb';
 
-  StreamSubscription? _linkSub;
+  final _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSub;
 
   // Android emulator reaches the host machine via 10.0.2.2
   // LAN fallback is usually http://192.168.1.182:5006
@@ -191,20 +192,19 @@ class _RootScreenState extends State<RootScreen> {
     super.initState();
 
     // Listen for deep links (OpenID callback)
-    _linkSub = uriLinkStream.listen(
+    _linkSub = _appLinks.uriLinkStream.listen(
       (uri) {
-        if (uri == null) return;
         _handleIncomingUri(uri);
       },
       onError: (err) {
         // Non-fatal; we can still use password login.
         // ignore: avoid_print
-        print('uni_links error: $err');
+        print('app_links error: $err');
       },
     );
 
     // If app was started via a link
-    getInitialUri().then((uri) {
+    _appLinks.getInitialLink().then((uri) {
       if (uri != null) _handleIncomingUri(uri);
     }).catchError((_) {});
   }
