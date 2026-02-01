@@ -39,6 +39,39 @@ class ActualApi {
     token = t;
   }
 
+  /// Starts OpenID login.
+  ///
+  /// Server responds with `{ status: 'ok', data: { returnUrl: '<auth-url>' } }`.
+  /// We open that URL in the system browser; the server will eventually
+  /// redirect back to `returnUrl + '/openid-cb?token=...'`.
+  Future<String> startOpenIdLogin({
+    required String returnUrl,
+    String? password,
+  }) async {
+    final body = <String, dynamic>{'returnUrl': returnUrl};
+    if (password != null && password.isNotEmpty) {
+      body['password'] = password;
+    }
+
+    final res = await http.post(
+      _u('/account/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+
+    final json = _decodeJson(res);
+    final data = json['data'] as Map<String, dynamic>?;
+    final url = (data?['returnUrl'] as String?)?.trim();
+    if (url == null || url.isEmpty) {
+      throw Exception('No OpenID returnUrl returned');
+    }
+    return url;
+  }
+
+  void setToken(String newToken) {
+    token = newToken;
+  }
+
   Future<List<dynamic>> listUserFiles() async {
     if (token == null) throw Exception('Not logged in');
     final res = await http.get(

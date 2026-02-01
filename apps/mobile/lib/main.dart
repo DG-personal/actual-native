@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:uni_links/uni_links.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'src/actual_api.dart';
 import 'src/screens/budget_detail_screen.dart';
@@ -28,6 +32,12 @@ class RootScreen extends StatefulWidget {
 }
 
 class _RootScreenState extends State<RootScreen> {
+  static const _appScheme = 'actualnative';
+  static const _appHost = 'callback';
+  static const _openIdCbPath = '/openid-cb';
+
+  StreamSubscription? _linkSub;
+
   // Android emulator reaches the host machine via 10.0.2.2
   // LAN fallback is usually http://192.168.1.182:5006
   final _baseUrlController = TextEditingController(text: 'http://10.0.2.2:5006');
@@ -40,6 +50,35 @@ class _RootScreenState extends State<RootScreen> {
 
   bool _bootstrapped = true;
   List<dynamic> _budgets = [];
+
+  String _openIdReturnUrlBase() {
+    // Server will append `/openid-cb?token=...` to this.
+    return '$_appScheme://$_appHost';
+  }
+
+  Future<void> _handleIncomingUri(Uri uri) async {
+    // Expect: actualnative://callback/openid-cb?token=...
+    if (uri.scheme != _appScheme) return;
+    if (uri.host != _appHost) return;
+    if (uri.path != _openIdCbPath) return;
+
+    final t = uri.queryParameters['token'];
+    if (t == null || t.isEmpty) return;
+
+    final api = _api;
+    if (api == null) {
+      setState(() => _error = 'Received OpenID token but API not connected yet');
+      return;
+    }
+
+    api.setToken(t);
+    try {
+      final budgets = await api.listUserFiles();
+      setState(() => _budgets = budgets);
+    } catch (e) {
+      setState(() => _error = 'OpenID token received, but loading budgets failed: $e');
+    }
+  }
 
   Future<void> _connect() async {
     setState(() {
@@ -117,6 +156,67 @@ class _RootScreenState extends State<RootScreen> {
     }
   }
 
+  Future<void> _loginWithOpenId() async {
+    final api = _api;
+    if (api == null) return;
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final authUrl = await api.startOpenIdLogin(
+        returnUrl: _openIdReturnUrlBase(),
+        // Some server setups require password during OpenID initiation.
+        password: _passwordController.text.trim().isEmpty
+            ? null
+            : _passwordController.text.trim(),
+      );
+
+      final uri = Uri.parse(authUrl);
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) {
+        throw Exception('Failed to launch browser');
+      }
+    } catch (e) {
+      setState(() => _error = 'OpenID start failed: $e');
+    } finally {
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Listen for deep links (OpenID callback)
+    _linkSub = uriLinkStream.listen(
+      (uri) {
+        if (uri == null) return;
+        _handleIncomingUri(uri);
+      },
+      onError: (err) {
+        // Non-fatal; we can still use password login.
+        // ignore: avoid_print
+        print('uni_links error: $err');
+      },
+    );
+
+    // If app was started via a link
+    getInitialUri().then((uri) {
+      if (uri != null) _handleIncomingUri(uri);
+    }).catchError((_) {});
+  }
+
+  @override
+  void dispose() {
+    _linkSub?.cancel();
+    _baseUrlController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final api = _api;
@@ -161,7 +261,18 @@ class _RootScreenState extends State<RootScreen> {
               FilledButton.icon(
                 onPressed: _loading ? null : _loginAndLoadBudgets,
                 icon: const Icon(Icons.login),
-                label: const Text('Login + Load Budgets'),
+                label: const Text('Login + Load Budgets (password)'),
+              ),
+              const SizedBox(height: 8),
+              FilledButton.icon(
+                onPressed: _loading ? null : _loginWithOpenId,
+                icon: const Icon(Icons.open_in_browser),
+                label: const Text('Login with Google (OpenID)'),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'OpenID callback: ${_openIdReturnUrlBase()}$_openIdCbPath',
+                style: const TextStyle(color: Colors.grey),
               ),
             ],
             const SizedBox(height: 12),
