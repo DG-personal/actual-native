@@ -39,10 +39,10 @@ class _RootScreenState extends State<RootScreen> {
   final _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSub;
 
+  // LAN is the default for real devices on your network.
   // Android emulator reaches the host machine via 10.0.2.2
-  // LAN fallback is usually http://192.168.1.182:5006
-  final _baseUrlController = TextEditingController(text: 'http://10.0.2.2:5006');
-  final _serverHint = 'Android emulator: http://10.0.2.2:5006 | LAN: http://192.168.1.182:5006';
+  final _baseUrlController = TextEditingController(text: 'http://192.168.1.182:5006');
+  final _serverHint = 'LAN: http://192.168.1.182:5006 | Android emulator: http://10.0.2.2:5006';
   final _passwordController = TextEditingController();
 
   ActualApi? _api;
