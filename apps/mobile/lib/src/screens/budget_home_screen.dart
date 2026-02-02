@@ -9,11 +9,13 @@ class BudgetHomeScreen extends StatefulWidget {
     required this.api,
     required this.fileId,
     required this.name,
+    this.demoMode = false,
   });
 
   final ActualApi api;
   final String fileId;
   final String name;
+  final bool demoMode;
 
   @override
   State<BudgetHomeScreen> createState() => _BudgetHomeScreenState();
@@ -50,6 +52,12 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     });
 
     try {
+      if (widget.demoMode) {
+        _seedDemoData();
+        setState(() => _loading = false);
+        return;
+      }
+
       final budget = await BudgetLocal.downloadAndOpen(
         api: widget.api,
         fileId: widget.fileId,
@@ -94,7 +102,69 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     }
   }
 
+  void _seedDemoData() {
+    // IDs are arbitrary strings; in real budgets they are UUIDs.
+    const checkingId = 'demo-checking';
+    const savingsId = 'demo-savings';
+    const cardId = 'demo-card';
+
+    _accounts = [
+      {
+        'id': checkingId,
+        'name': 'Checking',
+        'type': 'depository',
+        'balance_current': 2450000, // $2450.000
+      },
+      {
+        'id': savingsId,
+        'name': 'Savings',
+        'type': 'depository',
+        'balance_current': 12000000, // $12000.000
+      },
+      {
+        'id': cardId,
+        'name': 'Credit Card',
+        'type': 'credit',
+        'balance_current': -531250, // -$531.250
+      },
+    ];
+
+    _categoryGroups = [
+      {'id': 'cg-income', 'name': 'Income', 'sort_order': 1.0, 'is_income': 1},
+      {'id': 'cg-bills', 'name': 'Bills', 'sort_order': 2.0, 'is_income': 0},
+      {'id': 'cg-frequent', 'name': 'Frequent', 'sort_order': 3.0, 'is_income': 0},
+      {'id': 'cg-fun', 'name': 'Fun', 'sort_order': 4.0, 'is_income': 0},
+    ];
+
+    _categories = [
+      {'id': 'c-paycheck', 'name': 'Paycheck', 'cat_group': 'cg-income', 'sort_order': 1.0, 'is_income': 1},
+      {'id': 'c-rent', 'name': 'Rent', 'cat_group': 'cg-bills', 'sort_order': 2.0, 'is_income': 0},
+      {'id': 'c-electric', 'name': 'Electric', 'cat_group': 'cg-bills', 'sort_order': 3.0, 'is_income': 0},
+      {'id': 'c-groceries', 'name': 'Groceries', 'cat_group': 'cg-frequent', 'sort_order': 4.0, 'is_income': 0},
+      {'id': 'c-gas', 'name': 'Gas', 'cat_group': 'cg-frequent', 'sort_order': 5.0, 'is_income': 0},
+      {'id': 'c-restaurants', 'name': 'Restaurants', 'cat_group': 'cg-frequent', 'sort_order': 6.0, 'is_income': 0},
+      {'id': 'c-entertainment', 'name': 'Entertainment', 'cat_group': 'cg-fun', 'sort_order': 7.0, 'is_income': 0},
+    ];
+
+    // date is int YYYYMMDD, amount is milliunits.
+    _selectedAccountId = checkingId;
+    _transactions = [
+      {'id': 't1', 'date': 20260201, 'amount': 4500000, 'description': 'Paycheck', 'category': 'c-paycheck'},
+      {'id': 't2', 'date': 20260202, 'amount': -1500000, 'description': 'Rent', 'category': 'c-rent'},
+      {'id': 't3', 'date': 20260203, 'amount': -112450, 'description': 'Groceries', 'category': 'c-groceries'},
+      {'id': 't4', 'date': 20260204, 'amount': -45000, 'description': 'Gas', 'category': 'c-gas'},
+      {'id': 't5', 'date': 20260205, 'amount': -58999, 'description': 'Dinner', 'category': 'c-restaurants'},
+      {'id': 't6', 'date': 20260206, 'amount': -14900, 'description': 'Movie rental', 'category': 'c-entertainment'},
+      {'id': 't7', 'date': 20260207, 'amount': -89100, 'description': 'Electric bill', 'category': 'c-electric'},
+    ];
+  }
+
   Future<void> _loadTransactions(String accountId) async {
+    if (widget.demoMode) {
+      setState(() => _selectedAccountId = accountId);
+      return;
+    }
+
     final db = _budget?.db;
     if (db == null) return;
 

@@ -282,6 +282,25 @@ class _RootScreenState extends State<RootScreen> {
               Text(_error!, style: const TextStyle(color: Colors.redAccent)),
             ],
             const SizedBox(height: 12),
+            FilledButton.tonalIcon(
+              onPressed: () {
+                final api = _api;
+                if (api == null) return;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => BudgetHomeScreen(
+                      api: api,
+                      fileId: 'demo',
+                      name: 'Demo Budget',
+                      demoMode: true,
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('Open Demo Budget (local data)'),
+            ),
+            const SizedBox(height: 12),
             Expanded(
               child: ListView.builder(
                 itemCount: _budgets.length,
