@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../actual_api.dart';
 import '../budget_local.dart';
+import '../sync/actual_sync_client.dart';
 
 class BudgetHomeScreen extends StatefulWidget {
   const BudgetHomeScreen({
@@ -26,6 +27,10 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
   String? _error;
   LocalBudget? _budget;
 
+  // MVP sync (unencrypted budgets only): track a simple `since` cursor.
+  String _since = '1970-01-01T00:00:00.000Z-0000-0000000000000000';
+  String? _syncInfo;
+
   List<Map<String, Object?>> _accounts = [];
   List<Map<String, Object?>> _categories = [];
   List<Map<String, Object?>> _categoryGroups = [];
@@ -49,6 +54,7 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     setState(() {
       _loading = true;
       _error = null;
+      _syncInfo = null;
     });
 
     try {
@@ -56,6 +62,37 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         _seedDemoData();
         setState(() => _loading = false);
         return;
+      }
+
+      // Sync round-trip (unencrypted only for MVP): fetch envelopes and advance `since`.
+      // We don't apply to sqlite yet; this is the first milestone: prove /sync/sync works.
+      final token = widget.api.token;
+      if (token != null) {
+        try {
+          final syncClient = ActualSyncClient(baseUrl: widget.api.baseUrl, token: token);
+          // Need groupId; pull from file info.
+          final info = await widget.api.getUserFileInfo(fileId: widget.fileId);
+          final data = info['data'] as Map<String, dynamic>?;
+          final groupId = (data?['groupId'] as String?) ?? '';
+          if (groupId.isNotEmpty) {
+            final resp = await syncClient.sync(
+              fileId: widget.fileId,
+              groupId: groupId,
+              since: _since,
+            );
+            final maxTs = ActualSyncClient.maxTimestamp(resp.messages);
+            if (maxTs.isNotEmpty) {
+              _since = maxTs;
+            }
+            _syncInfo = 'Sync ok: received ${resp.messages.length} msgs; since=$_since';
+          } else {
+            _syncInfo = 'Sync skipped: missing groupId';
+          }
+        } catch (e) {
+          _syncInfo = 'Sync error: $e';
+        }
+      } else {
+        _syncInfo = 'Sync skipped: not logged in';
       }
 
       final budget = await BudgetLocal.downloadAndOpen(
@@ -236,6 +273,14 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                   length: 3,
                   child: Column(
                     children: [
+                      if (_syncInfo != null)
+                        Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Text(
+                            _syncInfo!,
+                            style: const TextStyle(color: Colors.grey),
+                          ),
+                        ),
                       const TabBar(
                         tabs: [
                           Tab(text: 'Accounts'),
