@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'src/actual_api.dart';
-import 'src/screens/budget_home_screen.dart';
+import 'src/screens/budget_shell_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -288,7 +288,7 @@ class _RootScreenState extends State<RootScreen> {
                 if (api == null) return;
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) => BudgetHomeScreen(
+                    builder: (_) => BudgetShellScreen(
                       api: api,
                       fileId: 'demo',
                       name: 'Demo Budget',
@@ -320,7 +320,7 @@ class _RootScreenState extends State<RootScreen> {
                             if (api == null) return;
                             Navigator.of(context).push(
                               MaterialPageRoute(
-                                builder: (_) => BudgetHomeScreen(
+                                builder: (_) => BudgetShellScreen(
                                   api: api,
                                   fileId: fileId,
                                   name: name,
