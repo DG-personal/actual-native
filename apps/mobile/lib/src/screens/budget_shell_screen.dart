@@ -23,15 +23,24 @@ class BudgetShellScreen extends StatefulWidget {
 
 class _BudgetShellScreenState extends State<BudgetShellScreen> {
   int _index = 0;
+  final GlobalKey _budgetKey = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
       // Dashboard (placeholder for now)
-      _DashboardPlaceholder(name: widget.name),
+      _DashboardPlaceholder(name: widget.name, onSync: () {
+        final s = _budgetKey.currentState;
+        if (s != null) {
+          // ignore: avoid_dynamic_calls
+          (s as dynamic).syncNow();
+          setState(() => _index = 1);
+        }
+      }),
 
       // Existing budget view (accounts/transactions/budget)
       BudgetHomeScreen(
+        key: _budgetKey,
         api: widget.api,
         fileId: widget.fileId,
         name: widget.name,
@@ -62,9 +71,10 @@ class _BudgetShellScreenState extends State<BudgetShellScreen> {
 }
 
 class _DashboardPlaceholder extends StatelessWidget {
-  const _DashboardPlaceholder({required this.name});
+  const _DashboardPlaceholder({required this.name, required this.onSync});
 
   final String name;
+  final VoidCallback onSync;
 
   @override
   Widget build(BuildContext context) {
@@ -85,6 +95,12 @@ class _DashboardPlaceholder extends StatelessWidget {
               style: TextStyle(color: Colors.grey),
             ),
             const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onSync,
+              icon: const Icon(Icons.sync),
+              label: const Text('Sync Now'),
+            ),
+            const SizedBox(height: 12),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(12),

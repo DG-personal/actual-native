@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../actual_api.dart';
 import '../budget_local.dart';
 import '../sync/actual_sync_client.dart';
+import '../sync/pb/sync.pb.dart' as pb;
+import 'package:shared_preferences/shared_preferences.dart';
 
 class BudgetHomeScreen extends StatefulWidget {
   const BudgetHomeScreen({
@@ -28,7 +30,8 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
   LocalBudget? _budget;
 
   // MVP sync (unencrypted budgets only): track a simple `since` cursor.
-  String _since = '1970-01-01T00:00:00.000Z-0000-0000000000000000';
+  static const _zeroSince = '1970-01-01T00:00:00.000Z-0000-0000000000000000';
+  String _since = _zeroSince;
   String? _syncInfo;
 
   List<Map<String, Object?>> _accounts = [];
@@ -42,6 +45,74 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  Future<void> syncNow() async {
+    if (widget.demoMode) {
+      setState(() {
+        _syncInfo = 'Demo mode (no server sync)';
+      });
+      return;
+    }
+
+    final token = widget.api.token;
+    if (token == null) {
+      setState(() => _syncInfo = 'Sync skipped: not logged in');
+      return;
+    }
+
+    final budget = _budget;
+    if (budget == null) {
+      setState(() => _syncInfo = 'Sync skipped: local DB not open');
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _error = null;
+      _syncInfo = 'Syncing…';
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _since = prefs.getString('since:${widget.fileId}') ?? _zeroSince;
+
+      final info = await widget.api.getUserFileInfo(fileId: widget.fileId);
+      final data = info['data'] as Map<String, dynamic>?;
+      final groupId = (data?['groupId'] as String?) ?? '';
+      if (groupId.isEmpty) {
+        throw Exception('Missing groupId');
+      }
+
+      final syncClient = ActualSyncClient(baseUrl: widget.api.baseUrl, token: token);
+      final resp = await syncClient.sync(
+        fileId: widget.fileId,
+        groupId: groupId,
+        since: _since,
+      );
+
+      final envs = resp.messages;
+      // Advance since based on max timestamp seen.
+      final maxTs = ActualSyncClient.maxTimestamp(envs);
+      if (maxTs.isNotEmpty) {
+        _since = maxTs;
+        await prefs.setString('since:${widget.fileId}', _since);
+      }
+
+      // Apply messages to sqlite (unencrypted only)
+      await _applyEnvelopesToSqlite(budget.db, envs);
+
+      // Refresh views
+      await _reloadFromDb();
+
+      setState(() {
+        _syncInfo = 'Sync ok: received ${envs.length} msgs; since=$_since';
+      });
+    } catch (e) {
+      setState(() => _syncInfo = 'Sync error: $e');
+    } finally {
+      setState(() => _loading = false);
+    }
   }
 
   @override
@@ -64,79 +135,104 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         return;
       }
 
-      // Sync round-trip (unencrypted only for MVP): fetch envelopes and advance `since`.
-      // We don't apply to sqlite yet; this is the first milestone: prove /sync/sync works.
-      final token = widget.api.token;
-      if (token != null) {
-        try {
-          final syncClient = ActualSyncClient(baseUrl: widget.api.baseUrl, token: token);
-          // Need groupId; pull from file info.
-          final info = await widget.api.getUserFileInfo(fileId: widget.fileId);
-          final data = info['data'] as Map<String, dynamic>?;
-          final groupId = (data?['groupId'] as String?) ?? '';
-          if (groupId.isNotEmpty) {
-            final resp = await syncClient.sync(
-              fileId: widget.fileId,
-              groupId: groupId,
-              since: _since,
-            );
-            final maxTs = ActualSyncClient.maxTimestamp(resp.messages);
-            if (maxTs.isNotEmpty) {
-              _since = maxTs;
-            }
-            _syncInfo = 'Sync ok: received ${resp.messages.length} msgs; since=$_since';
-          } else {
-            _syncInfo = 'Sync skipped: missing groupId';
-          }
-        } catch (e) {
-          _syncInfo = 'Sync error: $e';
-        }
-      } else {
-        _syncInfo = 'Sync skipped: not logged in';
-      }
+      // Load persisted `since` (manual sync uses this cursor).
+      final prefs = await SharedPreferences.getInstance();
+      _since = prefs.getString('since:${widget.fileId}') ?? _zeroSince;
 
       final budget = await BudgetLocal.downloadAndOpen(
         api: widget.api,
         fileId: widget.fileId,
+        readOnly: false,
       );
 
-      final db = budget.db;
-      final accounts = await db.rawQuery(
-        'SELECT id, name, type, offbudget, closed, balance_current, balance_available '
-        'FROM accounts '
-        'ORDER BY name',
-      );
+      _budget = budget;
+      await _reloadFromDb();
 
-      final groups = await db.rawQuery(
-        'SELECT id, name, sort_order, is_income '
-        'FROM category_groups '
-        'WHERE tombstone = 0 '
-        'ORDER BY sort_order',
-      );
-
-      final cats = await db.rawQuery(
-        'SELECT id, name, cat_group, sort_order, is_income '
-        'FROM categories '
-        'WHERE tombstone = 0 '
-        'ORDER BY sort_order',
-      );
-
-      setState(() {
-        _budget = budget;
-        _accounts = accounts;
-        _categoryGroups = groups;
-        _categories = cats;
-        _selectedAccountId = accounts.isNotEmpty ? accounts.first['id'] as String? : null;
-      });
-
-      if (_selectedAccountId != null) {
-        await _loadTransactions(_selectedAccountId!);
-      }
     } catch (e) {
       setState(() => _error = 'Failed to open budget: $e');
     } finally {
       setState(() => _loading = false);
     }
+  }
+
+
+  Future<void> _reloadFromDb() async {
+    if (widget.demoMode) return;
+    final db = _budget?.db;
+    if (db == null) return;
+
+    final accounts = await db.rawQuery(
+      'SELECT id, name, type, offbudget, closed, balance_current, balance_available '
+      'FROM accounts '
+      'ORDER BY name',
+    );
+
+    final groups = await db.rawQuery(
+      'SELECT id, name, sort_order, is_income '
+      'FROM category_groups '
+      'WHERE tombstone = 0 '
+      'ORDER BY sort_order',
+    );
+
+    final cats = await db.rawQuery(
+      'SELECT id, name, cat_group, sort_order, is_income '
+      'FROM categories '
+      'WHERE tombstone = 0 '
+      'ORDER BY sort_order',
+    );
+
+    setState(() {
+      _accounts = accounts;
+      _categoryGroups = groups;
+      _categories = cats;
+      _selectedAccountId = _selectedAccountId ?? (accounts.isNotEmpty ? accounts.first['id'] as String? : null);
+    });
+
+    if (_selectedAccountId != null) {
+      await _loadTransactions(_selectedAccountId!);
+    }
+  }
+
+  String _q(String ident) => '"${ident.replaceAll('"', '""')}"';
+
+  Object? _decodeValue(String v) {
+    if (v.startsWith('0:')) return null;
+    if (v.startsWith('S:')) return v.substring(2);
+    if (v.startsWith('N:')) {
+      final n = num.tryParse(v.substring(2));
+      if (n == null) return null;
+      if (n is int) return n;
+      if (n % 1 == 0) return n.toInt();
+      return n;
+    }
+    return v;
+  }
+
+  Future<void> _applyEnvelopesToSqlite(
+    dynamic db,
+    List<pb.MessageEnvelope> envs,
+  ) async {
+    // Only supports unencrypted envelopes for MVP.
+    await db.transaction((txn) async {
+      for (final env in envs) {
+        if (env.isEncrypted) continue;
+        final msg = pb.Message.fromBuffer(env.content);
+        final dataset = msg.dataset;
+        if (dataset == 'prefs') continue;
+
+        final rowId = msg.row;
+        final col = msg.column;
+        final val = _decodeValue(msg.value);
+
+        final tableQ = _q(dataset);
+        final colQ = _q(col);
+
+        // Ensure row exists
+        await txn.execute('INSERT OR IGNORE INTO $tableQ (id) VALUES (?)', [rowId]);
+        // Apply update
+        await txn.execute('UPDATE $tableQ SET $colQ = ? WHERE id = ?', [val, rowId]);
+      }
+    });
   }
 
   void _seedDemoData() {

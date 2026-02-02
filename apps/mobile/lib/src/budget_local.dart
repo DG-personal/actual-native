@@ -22,6 +22,7 @@ class BudgetLocal {
   static Future<LocalBudget> downloadAndOpen({
     required ActualApi api,
     required String fileId,
+    bool readOnly = true,
   }) async {
     final supportDir = await getApplicationSupportDirectory();
     final budgetDir = Directory(p.join(supportDir.path, 'budgets', fileId));
@@ -32,7 +33,7 @@ class BudgetLocal {
     final zipBytes = await api.downloadUserFileBytes(fileId: fileId);
     final dbFile = await _extractDbSqlite(zipBytes: zipBytes, outDir: budgetDir);
 
-    final db = await openDatabase(dbFile.path, readOnly: true);
+    final db = await openDatabase(dbFile.path, readOnly: readOnly);
     return LocalBudget(fileId: fileId, dir: budgetDir, db: db);
   }
 
