@@ -500,6 +500,29 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     ];
   }
 
+  final Map<String, Set<String>> _tableColumnsCache = {};
+
+  Future<bool> _tableExists(dynamic db, String table) async {
+    final rows = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+      [table],
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<Set<String>> _tableColumns(dynamic db, String table) async {
+    final cached = _tableColumnsCache[table];
+    if (cached != null) return cached;
+
+    final rows = await db.rawQuery('PRAGMA table_info($table)');
+    final cols = <String>{
+      for (final r in rows) (r['name'] as String?) ?? '',
+    }..remove('');
+
+    _tableColumnsCache[table] = cols;
+    return cols;
+  }
+
   Future<void> _loadTransactions(String accountId) async {
     if (widget.demoMode) {
       setState(() => _selectedAccountId = accountId);
@@ -509,11 +532,45 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     final db = _budget?.db;
     if (db == null) return;
 
+    final txCols = await _tableColumns(db, 'transactions');
+
+    final payeeCol = txCols.contains('payee')
+        ? 'payee'
+        : (txCols.contains('payee_id') ? 'payee_id' : null);
+
+    final hasCleared = txCols.contains('cleared');
+    final hasReconciled = txCols.contains('reconciled');
+
+    final hasPayees = payeeCol != null && await _tableExists(db, 'payees');
+
+    final select = <String>[
+      't.id as id',
+      't.date as date',
+      't.amount as amount',
+      't.description as description',
+      't.notes as notes',
+      't.category as category',
+      't.acct as acct',
+      'a.name as account_name',
+      'c.name as category_name',
+      if (payeeCol != null) 't.$payeeCol as payee_id',
+      if (hasPayees) 'p.name as payee_name',
+      if (hasCleared) 't.cleared as cleared',
+      if (hasReconciled) 't.reconciled as reconciled',
+    ].join(', ');
+
+    final joins = <String>[
+      'LEFT JOIN accounts a ON a.id = t.acct',
+      'LEFT JOIN categories c ON c.id = t.category',
+      if (hasPayees) 'LEFT JOIN payees p ON p.id = t.$payeeCol',
+    ].join(' ');
+
     final tx = await db.rawQuery(
-      'SELECT id, date, amount, description, notes, category '
-      'FROM transactions '
-      'WHERE tombstone = 0 AND acct = ? '
-      'ORDER BY date DESC, sort_order DESC '
+      'SELECT $select '
+      'FROM transactions t '
+      '$joins '
+      'WHERE t.tombstone = 0 AND t.acct = ? '
+      'ORDER BY t.date DESC, t.sort_order DESC '
       'LIMIT 200',
       [accountId],
     );
@@ -655,9 +712,31 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
               final desc = (t['description'] as String?) ?? '';
               final date = _fmtDate(t['date']);
               final amt = _fmtMoney(t['amount']);
+
+              final categoryName = (t['category_name'] as String?) ??
+                  _categories
+                      .firstWhere(
+                        (c) => c['id'] == t['category'],
+                        orElse: () => const <String, Object?>{},
+                      )['name'] as String?;
+
+              final payeeName = (t['payee_name'] as String?);
+
+              final cleared = (t['cleared'] as num?)?.toInt();
+              final reconciled = (t['reconciled'] as num?)?.toInt();
+
+              final flags = <String>[];
+              if (reconciled != null && reconciled != 0) flags.add('R');
+              if (cleared != null && cleared != 0) flags.add('C');
+
+              final subtitleParts = <String>[date];
+              if (payeeName != null && payeeName.isNotEmpty) subtitleParts.add(payeeName);
+              if (categoryName != null && categoryName.isNotEmpty) subtitleParts.add(categoryName);
+              if (flags.isNotEmpty) subtitleParts.add(flags.join(','));
+
               return ListTile(
                 title: Text(desc.isEmpty ? '(no description)' : desc),
-                subtitle: Text(date),
+                subtitle: Text(subtitleParts.join(' • ')),
                 trailing: Text(amt),
               );
             },
