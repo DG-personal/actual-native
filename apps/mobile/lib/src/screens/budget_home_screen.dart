@@ -24,7 +24,69 @@ class BudgetHomeScreen extends StatefulWidget {
   State<BudgetHomeScreen> createState() => _BudgetHomeScreenState();
 }
 
+/// Minimal controller surface so the Dashboard tab can query data and trigger sync.
+class BudgetHomeController {
+  BudgetHomeController(this._state);
+
+  final _BudgetHomeScreenState _state;
+
+  Future<void> syncNow() => _state.syncNow();
+
+  Future<DashboardData> loadDashboardData() => _state._loadDashboardData();
+
+  Future<void> setPinnedCategoryIds(List<String> ids) => _state._setPinnedCategoryIds(ids);
+}
+
+class DashboardCategory {
+  DashboardCategory({required this.id, required this.name, required this.spentThisMonthMilli});
+
+  final String id;
+  final String name;
+  final int spentThisMonthMilli;
+}
+
+class DashboardTx {
+  DashboardTx({
+    required this.id,
+    required this.date,
+    required this.amountMilli,
+    required this.description,
+    this.accountName,
+    this.categoryName,
+  });
+
+  final String id;
+  final int date;
+  final int amountMilli;
+  final String description;
+  final String? accountName;
+  final String? categoryName;
+}
+
+class DashboardCategoryChoice {
+  DashboardCategoryChoice({required this.id, required this.name});
+
+  final String id;
+  final String name;
+}
+
+class DashboardData {
+  DashboardData({
+    required this.pinnedCategoryIds,
+    required this.pinnedCategories,
+    required this.recentTransactions,
+    required this.allCategories,
+  });
+
+  final List<String> pinnedCategoryIds;
+  final List<DashboardCategory> pinnedCategories;
+  final List<DashboardTx> recentTransactions;
+  final List<DashboardCategoryChoice> allCategories;
+}
+
 class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
+  late final BudgetHomeController controller = BudgetHomeController(this);
+
   bool _loading = true;
   String? _error;
   LocalBudget? _budget;
@@ -233,6 +295,152 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         await txn.execute('UPDATE $tableQ SET $colQ = ? WHERE id = ?', [val, rowId]);
       }
     });
+  }
+
+  static String _pinsKey(String fileId) => 'pinnedCats:$fileId';
+
+  Future<List<String>> _getPinnedCategoryIds() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_pinsKey(widget.fileId)) ?? <String>[];
+  }
+
+  Future<void> _setPinnedCategoryIds(List<String> ids) async {
+    final prefs = await SharedPreferences.getInstance();
+    final unique = ids.toSet().toList();
+    unique.sort();
+    await prefs.setStringList(_pinsKey(widget.fileId), unique);
+  }
+
+  int _monthStartInt(DateTime now) => (now.year * 10000) + (now.month * 100) + 1;
+
+  int _monthEndInt(DateTime now) {
+    final nextMonth = (now.month == 12) ? DateTime(now.year + 1, 1, 1) : DateTime(now.year, now.month + 1, 1);
+    final lastDay = nextMonth.subtract(const Duration(days: 1));
+    return (lastDay.year * 10000) + (lastDay.month * 100) + lastDay.day;
+  }
+
+  Future<DashboardData> _loadDashboardData() async {
+    // Ensure base lists are loaded for the category picker.
+    if (_categories.isEmpty && !widget.demoMode) {
+      await _reloadFromDb();
+    }
+
+    // Demo mode: reuse seeded demo data.
+    if (widget.demoMode) {
+      final allCats = _categories
+          .map((c) => DashboardCategoryChoice(id: c['id'] as String? ?? '', name: c['name'] as String? ?? ''))
+          .where((c) => c.id.isNotEmpty)
+          .toList();
+
+      final pinnedIds = (await _getPinnedCategoryIds());
+      final effectivePinned = pinnedIds.isNotEmpty ? pinnedIds : allCats.take(3).map((c) => c.id).toList();
+
+      final pinned = effectivePinned
+          .map((id) {
+            final cat = _categories.firstWhere((c) => c['id'] == id, orElse: () => {'name': id});
+            final name = (cat['name'] as String?) ?? id;
+            final spent = _transactions
+                .where((t) => t['category'] == id)
+                .fold<int>(0, (sum, t) => sum + ((t['amount'] as num?)?.toInt() ?? 0));
+            return DashboardCategory(id: id, name: name, spentThisMonthMilli: spent);
+          })
+          .toList();
+
+      final recent = _transactions
+          .take(15)
+          .map((t) => DashboardTx(
+                id: (t['id'] as String?) ?? '',
+                date: (t['date'] as num?)?.toInt() ?? 0,
+                amountMilli: (t['amount'] as num?)?.toInt() ?? 0,
+                description: (t['description'] as String?) ?? '',
+                categoryName: _categories
+                    .firstWhere((c) => c['id'] == t['category'], orElse: () => const <String, Object?>{})['name'] as String?,
+                accountName: null,
+              ))
+          .toList();
+
+      return DashboardData(
+        pinnedCategoryIds: effectivePinned,
+        pinnedCategories: pinned,
+        recentTransactions: recent,
+        allCategories: allCats,
+      );
+    }
+
+    final db = _budget?.db;
+    if (db == null) {
+      throw Exception('Local DB not open');
+    }
+
+    final allCatsRows = await db.rawQuery(
+      'SELECT id, name FROM categories WHERE tombstone = 0 AND is_income = 0 ORDER BY sort_order',
+    );
+    final allCats = allCatsRows
+        .map((r) => DashboardCategoryChoice(id: r['id'] as String, name: (r['name'] as String?) ?? ''))
+        .toList();
+
+    var pinnedIds = await _getPinnedCategoryIds();
+    if (pinnedIds.isEmpty) {
+      pinnedIds = allCats.take(5).map((c) => c.id).toList();
+      // don't persist automatically; let the user edit/save
+    }
+
+    final now = DateTime.now();
+    final start = _monthStartInt(now);
+    final end = _monthEndInt(now);
+
+    // Build a safe IN clause.
+    final effectivePins = pinnedIds.where((id) => id.isNotEmpty).toList();
+    final inClause = effectivePins.isEmpty ? 'NULL' : effectivePins.map((_) => '?').join(',');
+
+    final pinnedRows = effectivePins.isEmpty
+        ? <Map<String, Object?>>[]
+        : await db.rawQuery(
+            'SELECT c.id as id, c.name as name, COALESCE(SUM(t.amount), 0) as spent '
+            'FROM categories c '
+            'LEFT JOIN transactions t ON t.category = c.id AND t.tombstone = 0 AND t.date BETWEEN ? AND ? '
+            'WHERE c.id IN ($inClause) '
+            'GROUP BY c.id '
+            'ORDER BY c.sort_order',
+            [start, end, ...effectivePins],
+          );
+
+    final pinned = pinnedRows
+        .map((r) => DashboardCategory(
+              id: r['id'] as String,
+              name: (r['name'] as String?) ?? '',
+              spentThisMonthMilli: (r['spent'] as num?)?.toInt() ?? 0,
+            ))
+        .toList();
+
+    final txRows = await db.rawQuery(
+      'SELECT t.id as id, t.date as date, t.amount as amount, t.description as description, '
+      'a.name as account_name, c.name as category_name '
+      'FROM transactions t '
+      'LEFT JOIN accounts a ON a.id = t.acct '
+      'LEFT JOIN categories c ON c.id = t.category '
+      'WHERE t.tombstone = 0 '
+      'ORDER BY t.date DESC, t.sort_order DESC '
+      'LIMIT 15',
+    );
+
+    final recent = txRows
+        .map((r) => DashboardTx(
+              id: r['id'] as String,
+              date: (r['date'] as num?)?.toInt() ?? 0,
+              amountMilli: (r['amount'] as num?)?.toInt() ?? 0,
+              description: (r['description'] as String?) ?? '',
+              accountName: r['account_name'] as String?,
+              categoryName: r['category_name'] as String?,
+            ))
+        .toList();
+
+    return DashboardData(
+      pinnedCategoryIds: pinnedIds,
+      pinnedCategories: pinned,
+      recentTransactions: recent,
+      allCategories: allCats,
+    );
   }
 
   void _seedDemoData() {

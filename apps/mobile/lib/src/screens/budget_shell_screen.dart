@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../actual_api.dart';
+import 'budget_dashboard_screen.dart';
 import 'budget_home_screen.dart';
 
 class BudgetShellScreen extends StatefulWidget {
@@ -28,15 +29,10 @@ class _BudgetShellScreenState extends State<BudgetShellScreen> {
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
-      // Dashboard (placeholder for now)
-      _DashboardPlaceholder(name: widget.name, onSync: () {
-        final s = _budgetKey.currentState;
-        if (s != null) {
-          // ignore: avoid_dynamic_calls
-          (s as dynamic).syncNow();
-          setState(() => _index = 1);
-        }
-      }),
+      BudgetDashboardScreen(
+        name: widget.name,
+        budgetHomeKey: _budgetKey,
+      ),
 
       // Existing budget view (accounts/transactions/budget)
       BudgetHomeScreen(
@@ -65,75 +61,6 @@ class _BudgetShellScreenState extends State<BudgetShellScreen> {
             label: 'Budget',
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _DashboardPlaceholder extends StatelessWidget {
-  const _DashboardPlaceholder({required this.name, required this.onSync});
-
-  final String name;
-  final VoidCallback onSync;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(name)),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Dashboard (WIP)',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Next: pinned budget categories + recent transactions.',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: onSync,
-              icon: const Icon(Icons.sync),
-              label: const Text('Sync Now'),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
-                    Text('Pinned categories (placeholder)'),
-                    SizedBox(height: 6),
-                    Text('- Groceries'),
-                    Text('- Rent'),
-                    Text('- Gas'),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
-                    Text('Recent transactions (placeholder)'),
-                    SizedBox(height: 6),
-                    Text('• Groceries  -\$112.45'),
-                    Text('• Dinner     -\$58.999'),
-                    Text('• Paycheck   +\$4500.000'),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
