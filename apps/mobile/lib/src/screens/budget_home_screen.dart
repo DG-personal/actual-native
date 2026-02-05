@@ -4,6 +4,7 @@ import '../actual_api.dart';
 import '../budget_local.dart';
 import '../sync/actual_sync_client.dart';
 import '../sync/pb/sync.pb.dart' as pb;
+import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class BudgetHomeScreen extends StatefulWidget {
@@ -94,7 +95,10 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
   // MVP sync (unencrypted budgets only): track a simple `since` cursor.
   static const _zeroSince = '1970-01-01T00:00:00.000Z-0000-0000000000000000';
   String _since = _zeroSince;
-  String? _syncInfo;
+
+  bool _syncing = false;
+  DateTime? _lastSyncAt;
+  String? _lastSyncError;
 
   List<Map<String, Object?>> _accounts = [];
   List<Map<String, Object?>> _categories = [];
@@ -109,35 +113,43 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     _load();
   }
 
+  static String _sinceKey(String fileId) => 'since:$fileId';
+  static String _lastSyncAtKey(String fileId) => 'lastSyncAt:$fileId';
+  static String _lastSyncErrorKey(String fileId) => 'lastSyncError:$fileId';
+
+  Future<void> _loadSyncMeta() async {
+    final prefs = await SharedPreferences.getInstance();
+    _since = prefs.getString(_sinceKey(widget.fileId)) ?? _zeroSince;
+    final lastMs = prefs.getInt(_lastSyncAtKey(widget.fileId));
+    _lastSyncAt = lastMs == null ? null : DateTime.fromMillisecondsSinceEpoch(lastMs);
+    _lastSyncError = prefs.getString(_lastSyncErrorKey(widget.fileId));
+  }
+
   Future<void> syncNow() async {
     if (widget.demoMode) {
-      setState(() {
-        _syncInfo = 'Demo mode (no server sync)';
-      });
       return;
     }
 
     final token = widget.api.token;
     if (token == null) {
-      setState(() => _syncInfo = 'Sync skipped: not logged in');
+      setState(() => _lastSyncError = 'Not logged in');
       return;
     }
 
     final budget = _budget;
     if (budget == null) {
-      setState(() => _syncInfo = 'Sync skipped: local DB not open');
+      setState(() => _lastSyncError = 'Local DB not open');
       return;
     }
 
     setState(() {
-      _loading = true;
-      _error = null;
-      _syncInfo = 'Syncing…';
+      _syncing = true;
+      _lastSyncError = null;
     });
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      _since = prefs.getString('since:${widget.fileId}') ?? _zeroSince;
+      _since = prefs.getString(_sinceKey(widget.fileId)) ?? _zeroSince;
 
       final info = await widget.api.getUserFileInfo(fileId: widget.fileId);
       final data = info['data'] as Map<String, dynamic>?;
@@ -154,11 +166,12 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
       );
 
       final envs = resp.messages;
+
       // Advance since based on max timestamp seen.
       final maxTs = ActualSyncClient.maxTimestamp(envs);
       if (maxTs.isNotEmpty) {
         _since = maxTs;
-        await prefs.setString('since:${widget.fileId}', _since);
+        await prefs.setString(_sinceKey(widget.fileId), _since);
       }
 
       // Apply messages to sqlite (unencrypted only)
@@ -167,13 +180,28 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
       // Refresh views
       await _reloadFromDb();
 
-      setState(() {
-        _syncInfo = 'Sync ok: received ${envs.length} msgs; since=$_since';
-      });
+      final now = DateTime.now();
+      _lastSyncAt = now;
+      await prefs.setInt(_lastSyncAtKey(widget.fileId), now.millisecondsSinceEpoch);
+      await prefs.remove(_lastSyncErrorKey(widget.fileId));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync ok: ${envs.length} updates')),
+        );
+      }
     } catch (e) {
-      setState(() => _syncInfo = 'Sync error: $e');
+      _lastSyncError = e.toString();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_lastSyncErrorKey(widget.fileId), _lastSyncError!);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $_lastSyncError')),
+        );
+      }
     } finally {
-      setState(() => _loading = false);
+      setState(() => _syncing = false);
     }
   }
 
@@ -187,7 +215,6 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     setState(() {
       _loading = true;
       _error = null;
-      _syncInfo = null;
     });
 
     try {
@@ -197,9 +224,8 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         return;
       }
 
-      // Load persisted `since` (manual sync uses this cursor).
-      final prefs = await SharedPreferences.getInstance();
-      _since = prefs.getString('since:${widget.fileId}') ?? _zeroSince;
+      // Load sync metadata (cursor + last sync info).
+      await _loadSyncMeta();
 
       final budget = await BudgetLocal.downloadAndOpen(
         api: widget.api,
@@ -581,14 +607,15 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     });
   }
 
+  final _moneyFmt = NumberFormat('#,##0.000');
+
   String _fmtMoney(Object? v) {
     if (v == null) return '';
     final milli = (v as num).toInt();
     final sign = milli < 0 ? '-' : '';
     final abs = milli.abs();
-    final dollars = abs ~/ 1000;
-    final frac = (abs % 1000).toString().padLeft(3, '0');
-    return '$sign\$$dollars.$frac';
+    final value = abs / 1000.0;
+    return '$sign\$${_moneyFmt.format(value)}';
   }
 
   String _fmtDate(Object? v) {
@@ -607,7 +634,14 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         title: Text(widget.name),
         actions: [
           IconButton(
-            onPressed: _loading ? null : _load,
+            onPressed: (_loading || _syncing) ? null : () async {
+              await syncNow();
+            },
+            icon: const Icon(Icons.sync),
+            tooltip: 'Sync Now',
+          ),
+          IconButton(
+            onPressed: (_loading || _syncing) ? null : _load,
             icon: const Icon(Icons.refresh),
             tooltip: 'Re-download',
           ),
@@ -634,14 +668,7 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                   length: 3,
                   child: Column(
                     children: [
-                      if (_syncInfo != null)
-                        Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Text(
-                            _syncInfo!,
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                        ),
+                      _buildSyncBanner(),
                       const TabBar(
                         tabs: [
                           Tab(text: 'Accounts'),
@@ -662,6 +689,54 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                   ),
                 ),
     );
+  }
+
+  Widget _buildSyncBanner() {
+    if (widget.demoMode) {
+      return const Padding(
+        padding: EdgeInsets.all(8),
+        child: Text('Demo mode (no server sync)', style: TextStyle(color: Colors.grey)),
+      );
+    }
+
+    final last = _lastSyncAt;
+    final err = _lastSyncError;
+
+    if (_syncing) {
+      return const Padding(
+        padding: EdgeInsets.only(left: 12, right: 12, top: 8, bottom: 4),
+        child: LinearProgressIndicator(),
+      );
+    }
+
+    if (err != null && err.isNotEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(8),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Expanded(child: Text('Last sync failed: $err', style: const TextStyle(color: Colors.redAccent))),
+          ],
+        ),
+      );
+    }
+
+    if (last != null) {
+      final ts = DateFormat('yyyy-MM-dd HH:mm').format(last);
+      return Padding(
+        padding: const EdgeInsets.all(8),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_outline, color: Colors.green),
+            const SizedBox(width: 8),
+            Expanded(child: Text('Last sync: $ts', style: const TextStyle(color: Colors.grey))),
+          ],
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 
   Widget _buildAccounts() {
