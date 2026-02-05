@@ -747,11 +747,33 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         final a = _accounts[i];
         final id = a['id'] as String?;
         final name = (a['name'] as String?) ?? '(unnamed)';
-        final bal = _fmtMoney(a['balance_current']);
+        final type = (a['type'] as String?) ?? '';
+        final offbudget = (a['offbudget'] as num?)?.toInt() ?? 0;
+        final closed = (a['closed'] as num?)?.toInt() ?? 0;
+
+        final balCurrent = _fmtMoney(a['balance_current']);
+        final balAvailRaw = a['balance_available'];
+        final balAvail = balAvailRaw == null ? null : _fmtMoney(balAvailRaw);
+
+        final subtitleParts = <String>[type];
+        if (offbudget != 0) subtitleParts.add('Off budget');
+        if (closed != 0) subtitleParts.add('Closed');
+
         return ListTile(
           title: Text(name),
-          subtitle: Text((a['type'] as String?) ?? ''),
-          trailing: Text(bal),
+          subtitle: Text(subtitleParts.where((s) => s.trim().isNotEmpty).join(' • ')),
+          trailing: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(balCurrent),
+              if (balAvail != null && balAvail != balCurrent)
+                Text(
+                  'Avail $balAvail',
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+            ],
+          ),
           onTap: id == null
               ? null
               : () async {
@@ -784,9 +806,12 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
             separatorBuilder: (context, index) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final t = _transactions[i];
+              final txId = (t['id'] as String?) ?? '';
               final desc = (t['description'] as String?) ?? '';
-              final date = _fmtDate(t['date']);
+              final dateRaw = t['date'];
+              final date = _fmtDate(dateRaw);
               final amt = _fmtMoney(t['amount']);
+              final notes = (t['notes'] as String?) ?? '';
 
               final categoryName = (t['category_name'] as String?) ??
                   _categories
@@ -795,6 +820,7 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                         orElse: () => const <String, Object?>{},
                       )['name'] as String?;
 
+              final accountName = (t['account_name'] as String?);
               final payeeName = (t['payee_name'] as String?);
 
               final cleared = (t['cleared'] as num?)?.toInt();
@@ -809,16 +835,147 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
               if (categoryName != null && categoryName.isNotEmpty) subtitleParts.add(categoryName);
               if (flags.isNotEmpty) subtitleParts.add(flags.join(','));
 
+              final notesPreview = notes.trim();
+
               return ListTile(
                 title: Text(desc.isEmpty ? '(no description)' : desc),
-                subtitle: Text(subtitleParts.join(' • ')),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(subtitleParts.join(' • ')),
+                    if (notesPreview.isNotEmpty)
+                      Text(
+                        notesPreview,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                  ],
+                ),
                 trailing: Text(amt),
+                onTap: txId.isEmpty
+                    ? null
+                    : () => _showTransactionDetail(
+                          tx: t,
+                          dateLabel: date,
+                          amountLabel: amt,
+                          accountName: accountName,
+                          categoryName: categoryName,
+                          payeeName: payeeName,
+                        ),
               );
             },
           ),
         ),
       ],
     );
+  }
+
+  void _showTransactionDetail({
+    required Map<String, Object?> tx,
+    required String dateLabel,
+    required String amountLabel,
+    required String? accountName,
+    required String? categoryName,
+    required String? payeeName,
+  }) {
+    final desc = (tx['description'] as String?) ?? '';
+    final notes = (tx['notes'] as String?) ?? '';
+    final flags = <String>[];
+    final cleared = (tx['cleared'] as num?)?.toInt();
+    final reconciled = (tx['reconciled'] as num?)?.toInt();
+    if (reconciled != null && reconciled != 0) flags.add('Reconciled');
+    if (cleared != null && cleared != 0) flags.add('Cleared');
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 12,
+              bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        desc.isEmpty ? '(no description)' : desc,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    Text(amountLabel, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                _detailRow('Date', dateLabel),
+                if (payeeName != null && payeeName.isNotEmpty) _detailRow('Payee', payeeName),
+                if (categoryName != null && categoryName.isNotEmpty) _detailRow('Category', categoryName),
+                if (accountName != null && accountName.isNotEmpty) _detailRow('Account', accountName),
+                if (flags.isNotEmpty) _detailRow('Status', flags.join(' • ')),
+                if (notes.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  const Text('Notes', style: TextStyle(color: Colors.grey)),
+                  const SizedBox(height: 4),
+                  Text(notes),
+                ],
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Close'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _detailRow(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(k, style: const TextStyle(color: Colors.grey)),
+          ),
+          Expanded(child: Text(v)),
+        ],
+      ),
+    );
+  }
+
+  Future<int> _spentThisMonthForCategory(String categoryId) async {
+    if (widget.demoMode) {
+      return _transactions
+          .where((t) => t['category'] == categoryId)
+          .fold<int>(0, (sum, t) => sum + ((t['amount'] as num?)?.toInt() ?? 0));
+    }
+
+    final db = _budget?.db;
+    if (db == null) return 0;
+
+    final now = DateTime.now();
+    final start = _monthStartInt(now);
+    final end = _monthEndInt(now);
+
+    final rows = await db.rawQuery(
+      'SELECT COALESCE(SUM(amount), 0) as spent '
+      'FROM transactions '
+      'WHERE tombstone = 0 AND category = ? AND date BETWEEN ? AND ?',
+      [categoryId, start, end],
+    );
+
+    return (rows.first['spent'] as num?)?.toInt() ?? 0;
   }
 
   Widget _buildBudget() {
@@ -833,22 +990,45 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
       children: [
         const Padding(
           padding: EdgeInsets.all(12),
-          child: Text('Category Groups', style: TextStyle(color: Colors.grey)),
+          child: Text('Budget (this month)', style: TextStyle(color: Colors.grey)),
         ),
         for (final g in _categoryGroups) ...[
-          ListTile(
-            title: Text((g['name'] as String?) ?? ''),
+          Builder(
+            builder: (context) {
+              final gid = (g['id'] as String?) ?? '';
+              final cats = byGroup[gid] ?? const <Map<String, Object?>>[];
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    title: Text(
+                      (g['name'] as String?) ?? '',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text('${cats.length} categories'),
+                  ),
+                  for (final c in cats)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: FutureBuilder<int>(
+                        future: _spentThisMonthForCategory((c['id'] as String?) ?? ''),
+                        builder: (context, snap) {
+                          final spent = snap.data ?? 0;
+                          return ListTile(
+                            dense: true,
+                            title: Text((c['name'] as String?) ?? ''),
+                            subtitle: const Text('Spent (this month)'),
+                            trailing: Text(_fmtMoney(spent)),
+                          );
+                        },
+                      ),
+                    ),
+                  const Divider(height: 1),
+                ],
+              );
+            },
           ),
-          ...((byGroup[(g['id'] as String?) ?? ''] ?? const <Map<String, Object?>>[]).map(
-            (c) => Padding(
-              padding: const EdgeInsets.only(left: 20),
-              child: ListTile(
-                dense: true,
-                title: Text((c['name'] as String?) ?? ''),
-              ),
-            ),
-          )),
-          const Divider(height: 1),
         ],
       ],
     );
