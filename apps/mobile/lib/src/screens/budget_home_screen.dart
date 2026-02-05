@@ -31,6 +31,10 @@ class BudgetHomeController {
 
   final _BudgetHomeScreenState _state;
 
+  bool get syncing => _state._syncing;
+  DateTime? get lastSyncAt => _state._lastSyncAt;
+  String? get lastSyncError => _state._lastSyncError;
+
   Future<void> syncNow() => _state.syncNow();
 
   Future<DashboardData> loadDashboardData() => _state._loadDashboardData();
