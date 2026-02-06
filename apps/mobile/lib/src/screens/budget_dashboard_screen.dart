@@ -1,0 +1,334 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'package:intl/intl.dart';
+
+import '../actual_api.dart';
+import 'app_menu.dart';
+import 'budget_home_screen.dart';
+
+class BudgetDashboardScreen extends StatefulWidget {
+  const BudgetDashboardScreen({
+    super.key,
+    required this.api,
+    required this.name,
+    required this.controllerListenable,
+  });
+
+  final ActualApi api;
+  final String name;
+  final ValueListenable<BudgetHomeController?> controllerListenable;
+
+  @override
+  State<BudgetDashboardScreen> createState() => _BudgetDashboardScreenState();
+}
+
+class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
+  int _refreshToken = 0;
+
+  void _refresh() {
+    setState(() {
+      _refreshToken++;
+    });
+  }
+
+  Future<void> _syncNow(BudgetHomeController c) async {
+    await c.syncNow();
+    if (!mounted) return;
+    _refresh();
+  }
+
+  Future<void> _editPins(BudgetHomeController c, DashboardData data) async {
+    final allCats = data.allCategories;
+    final pinned = {...data.pinnedCategoryIds};
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          expand: false,
+          builder: (context, scrollController) {
+            return StatefulBuilder(
+              builder: (context, setSheetState) {
+                return Column(
+                  children: [
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Pinned categories',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: ListView.builder(
+                        controller: scrollController,
+                        itemCount: allCats.length,
+                        itemBuilder: (context, i) {
+                          final cat = allCats[i];
+                          final id = cat.id;
+                          final checked = pinned.contains(id);
+                          return CheckboxListTile(
+                            value: checked,
+                            title: Text(cat.name),
+                            onChanged: (v) {
+                              setSheetState(() {
+                                if (v == true) {
+                                  pinned.add(id);
+                                } else {
+                                  pinned.remove(id);
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    Padding(
+                      padding: EdgeInsets.only(
+                        left: 16,
+                        right: 16,
+                        top: 8,
+                        bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: () async {
+                                await c.setPinnedCategoryIds(pinned.toList());
+                                if (context.mounted) {
+                                  Navigator.of(context).pop();
+                                }
+                              },
+                              child: const Text('Save'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+
+    if (!mounted) return;
+    _refresh();
+  }
+
+  final _moneyFmt = NumberFormat('#,##0.00');
+
+  String _fmtMoney(int cents) {
+    final sign = cents < 0 ? '-' : '';
+    final abs = cents.abs();
+    final value = abs / 100.0;
+    return '$sign\$${_moneyFmt.format(value)}';
+  }
+
+  String _fmtDate(int yyyymmdd) {
+    final y = yyyymmdd ~/ 10000;
+    final m = (yyyymmdd ~/ 100) % 100;
+    final d = yyyymmdd % 100;
+    return '$y-${m.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildSyncBanner(BudgetHomeController c) {
+    if (c.syncing) {
+      return const Padding(
+        padding: EdgeInsets.only(left: 16, right: 16, top: 8, bottom: 4),
+        child: LinearProgressIndicator(),
+      );
+    }
+
+    final err = c.lastSyncError;
+    if (err != null && err.isNotEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 16, right: 16, top: 8, bottom: 4),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.redAccent),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Last sync failed: $err',
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final last = c.lastSyncAt;
+    if (last != null) {
+      final ts = DateFormat('yyyy-MM-dd HH:mm').format(last);
+      return Padding(
+        padding: const EdgeInsets.only(left: 16, right: 16, top: 8, bottom: 4),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_outline, color: Colors.green),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Last sync: $ts',
+                style: const TextStyle(color: Colors.grey),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<BudgetHomeController?>(
+      valueListenable: widget.controllerListenable,
+      builder: (context, c, _) {
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(widget.name),
+            actions: [
+              IconButton(
+                onPressed: c == null ? null : () => _syncNow(c),
+                icon: const Icon(Icons.sync),
+                tooltip: 'Sync Now',
+              ),
+              IconButton(
+                onPressed: c == null ? null : _refresh,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Refresh',
+              ),
+              AppMenuButton(api: widget.api),
+            ],
+          ),
+          body: c == null
+              ? const Center(child: Text('Budget not loaded yet'))
+              : Column(
+                  children: [
+                    _buildSyncBanner(c),
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: () async {
+                          _refresh();
+                        },
+                        child: FutureBuilder<DashboardData>(
+                          key: ValueKey('${c.hashCode}-$_refreshToken'),
+                          future: c.loadDashboardData(),
+                          builder: (context, snap) {
+                            if (snap.connectionState ==
+                                ConnectionState.waiting) {
+                              return const Center(
+                                child: CircularProgressIndicator(),
+                              );
+                            }
+                            if (snap.hasError) {
+                              return ListView(
+                                padding: const EdgeInsets.all(16),
+                                children: [
+                                  Text(
+                                    'Dashboard error: ${snap.error}',
+                                    style: const TextStyle(
+                                      color: Colors.redAccent,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  FilledButton(
+                                    onPressed: _refresh,
+                                    child: const Text('Retry'),
+                                  ),
+                                ],
+                              );
+                            }
+
+                            final data = snap.data;
+                            if (data == null) {
+                              return const Center(child: Text('No data'));
+                            }
+
+                            return ListView(
+                              padding: const EdgeInsets.all(16),
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        'Pinned categories (this month)',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleMedium,
+                                      ),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => _editPins(c, data),
+                                      icon: const Icon(Icons.edit, size: 18),
+                                      label: const Text('Edit'),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                if (data.pinnedCategories.isEmpty)
+                                  const Text('No pinned categories yet.'),
+                                for (final p in data.pinnedCategories)
+                                  Card(
+                                    child: ListTile(
+                                      title: Text(p.name),
+                                      trailing: Text(
+                                        _fmtMoney(p.spentThisMonthMilli),
+                                      ),
+                                    ),
+                                  ),
+                                const SizedBox(height: 18),
+                                Text(
+                                  'Recent transactions',
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.titleMedium,
+                                ),
+                                const SizedBox(height: 8),
+                                if (data.recentTransactions.isEmpty)
+                                  const Text('No transactions yet.'),
+                                for (final t in data.recentTransactions)
+                                  Card(
+                                    child: ListTile(
+                                      title: Text(
+                                        t.description.isEmpty
+                                            ? '(no description)'
+                                            : t.description,
+                                      ),
+                                      subtitle: Text(
+                                        '${_fmtDate(t.date)}'
+                                        '${t.categoryName == null ? '' : ' • ${t.categoryName}'}'
+                                        '${t.accountName == null ? '' : ' • ${t.accountName}'}',
+                                      ),
+                                      trailing: Text(_fmtMoney(t.amountMilli)),
+                                    ),
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+        );
+      },
+    );
+  }
+}

@@ -1,4 +1,4 @@
-package com.example.mobile
+package com.actualbudget.actualnative
 
 import io.flutter.embedding.android.FlutterActivity
 

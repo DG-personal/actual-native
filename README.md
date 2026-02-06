@@ -2,18 +2,16 @@
 
 Native mobile app (iOS + Android) for **Actual Budget**.
 
-This repo contains a Flutter app that connects to a locally-hosted Actual server on Daniel’s LAN.
-
 ## TL;DR (how to run)
 
 ```bash
-cd /home/danielg/clawd/actual-native/apps/mobile
+cd apps/mobile
 flutter run
 ```
 
 ### Server URLs
-- **LAN (real device on your network):** `http://192.168.1.182:5006`
 - **Android emulator → host machine:** `http://10.0.2.2:5006`
+- **Real device on LAN:** use your host LAN IP, e.g. `http://192.168.1.X:5006`
 
 ## What “MVP” means for this project
 
@@ -21,18 +19,41 @@ MVP is only considered done when the app can:
 - Login
 - Select a budget
 - Display **Accounts**, **Transactions**, and **Budget**
-- Use Actual’s **real sync** protocol (`/sync/sync`) so it’s actually usable day-to-day
+- Use Actual’s **real sync** protocol (`/sync/sync`) so it’s usable day-to-day
 
-## Current state
+## Current state (today)
 
-- Flutter app scaffolding + password login + budgets list
-- Interim viewer implementation exists (download `/sync/download-user-file` → open `db.sqlite`) to accelerate UI iteration
-- Proper sync implementation is tracked on branch `sync-bridge`
+This repo is actively iterating on a YNAB-inspired mobile UX.
+
+On the `sync-bridge` branch, the app currently supports:
+- Connect + login + select budget
+- First-run hydration (download + open local sqlite) + incremental sync bridge
+- Basic transactions workflow: add, edit, categorize (local sqlite)
+- Early UX polish passes: theme + reusable list/card components
+- Dashboard refresh + last-sync status banner + sync progress/snackbars
+
+### What’s still in-flight
+
+- Budget tab overhaul: month picker, top totals (to-budget/over, budgeted/spent/available), collapsible category groups w/ group totals, clearer unassigned states
+- Accounts tab: clearer balances, closed/off-budget indicators, totals row, account detail header balance
+- Transactions: better filtering + account-scoped transaction list, clearer cleared/uncleared UX
+
+## Build APK
+
+```bash
+cd apps/mobile
+flutter build apk --release --split-per-abi
+```
+
+Outputs:
+- `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`
+- `build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk`
+- `build/app/outputs/flutter-apk/app-x86_64-release.apk`
 
 ## Decisions / project notes
 
 See:
-- `DECISIONS.md` (high-level decisions: Flutter, Docker server, MVP definition)
+- `DECISIONS.md`
 
 ## Repo structure
 
