@@ -23,6 +23,7 @@ class BudgetLocal {
     required ActualApi api,
     required String fileId,
     bool readOnly = true,
+    bool forceDownload = false,
   }) async {
     final supportDir = await getApplicationSupportDirectory();
     final budgetDir = Directory(p.join(supportDir.path, 'budgets', fileId));
@@ -30,8 +31,17 @@ class BudgetLocal {
       await budgetDir.create(recursive: true);
     }
 
+    final existingDb = File(p.join(budgetDir.path, 'db.sqlite'));
+    if (!forceDownload && await existingDb.exists()) {
+      final db = await openDatabase(existingDb.path, readOnly: readOnly);
+      return LocalBudget(fileId: fileId, dir: budgetDir, db: db);
+    }
+
     final zipBytes = await api.downloadUserFileBytes(fileId: fileId);
-    final dbFile = await _extractDbSqlite(zipBytes: zipBytes, outDir: budgetDir);
+    final dbFile = await _extractDbSqlite(
+      zipBytes: zipBytes,
+      outDir: budgetDir,
+    );
 
     final db = await openDatabase(dbFile.path, readOnly: readOnly);
     return LocalBudget(fileId: fileId, dir: budgetDir, db: db);

@@ -24,23 +24,30 @@ class BudgetShellScreen extends StatefulWidget {
 
 class _BudgetShellScreenState extends State<BudgetShellScreen> {
   int _index = 0;
-  final GlobalKey _budgetKey = GlobalKey();
+  final ValueNotifier<BudgetHomeController?> _controller = ValueNotifier(null);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
       BudgetDashboardScreen(
+        api: widget.api,
         name: widget.name,
-        budgetHomeKey: _budgetKey,
+        controllerListenable: _controller,
       ),
 
       // Existing budget view (accounts/transactions/budget)
       BudgetHomeScreen(
-        key: _budgetKey,
         api: widget.api,
         fileId: widget.fileId,
         name: widget.name,
         demoMode: widget.demoMode,
+        controllerNotifier: _controller,
       ),
     ];
 

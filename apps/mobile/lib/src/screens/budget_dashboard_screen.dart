@@ -1,58 +1,44 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:intl/intl.dart';
 
+import '../actual_api.dart';
+import 'app_menu.dart';
 import 'budget_home_screen.dart';
 
 class BudgetDashboardScreen extends StatefulWidget {
   const BudgetDashboardScreen({
     super.key,
+    required this.api,
     required this.name,
-    required this.budgetHomeKey,
+    required this.controllerListenable,
   });
 
+  final ActualApi api;
   final String name;
-  final GlobalKey budgetHomeKey;
+  final ValueListenable<BudgetHomeController?> controllerListenable;
 
   @override
   State<BudgetDashboardScreen> createState() => _BudgetDashboardScreenState();
 }
 
 class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
-  Future<DashboardData>? _future;
-
-  @override
-  void initState() {
-    super.initState();
-    _refresh();
-  }
-
-  BudgetHomeController? _controller() {
-    final s = widget.budgetHomeKey.currentState;
-    if (s == null) return null;
-    // ignore: avoid_dynamic_calls
-    return (s as dynamic).controller as BudgetHomeController?;
-  }
+  int _refreshToken = 0;
 
   void _refresh() {
-    final c = _controller();
     setState(() {
-      _future = c?.loadDashboardData();
+      _refreshToken++;
     });
   }
 
-  Future<void> _syncNow() async {
-    final c = _controller();
-    if (c == null) return;
+  Future<void> _syncNow(BudgetHomeController c) async {
     await c.syncNow();
     if (!mounted) return;
     _refresh();
   }
 
-  Future<void> _editPins(DashboardData data) async {
-    final c = _controller();
-    if (c == null) return;
-
+  Future<void> _editPins(BudgetHomeController c, DashboardData data) async {
     final allCats = data.allCategories;
     final pinned = {...data.pinnedCategoryIds};
 
@@ -68,7 +54,13 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
                 return Column(
                   children: [
                     const SizedBox(height: 12),
-                    const Text('Pinned categories', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    const Text(
+                      'Pinned categories',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     Expanded(
                       child: ListView.builder(
@@ -114,7 +106,9 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
                             child: FilledButton(
                               onPressed: () async {
                                 await c.setPinnedCategoryIds(pinned.toList());
-                                if (context.mounted) Navigator.of(context).pop();
+                                if (context.mounted) {
+                                  Navigator.of(context).pop();
+                                }
                               },
                               child: const Text('Save'),
                             ),
@@ -135,12 +129,12 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
     _refresh();
   }
 
-  final _moneyFmt = NumberFormat('#,##0.000');
+  final _moneyFmt = NumberFormat('#,##0.00');
 
-  String _fmtMoney(int milli) {
-    final sign = milli < 0 ? '-' : '';
-    final abs = milli.abs();
-    final value = abs / 1000.0;
+  String _fmtMoney(int cents) {
+    final sign = cents < 0 ? '-' : '';
+    final abs = cents.abs();
+    final value = abs / 100.0;
     return '$sign\$${_moneyFmt.format(value)}';
   }
 
@@ -167,7 +161,12 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
           children: [
             const Icon(Icons.error_outline, color: Colors.redAccent),
             const SizedBox(width: 8),
-            Expanded(child: Text('Last sync failed: $err', style: const TextStyle(color: Colors.redAccent))),
+            Expanded(
+              child: Text(
+                'Last sync failed: $err',
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            ),
           ],
         ),
       );
@@ -182,7 +181,12 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
           children: [
             const Icon(Icons.check_circle_outline, color: Colors.green),
             const SizedBox(width: 8),
-            Expanded(child: Text('Last sync: $ts', style: const TextStyle(color: Colors.grey))),
+            Expanded(
+              child: Text(
+                'Last sync: $ts',
+                style: const TextStyle(color: Colors.grey),
+              ),
+            ),
           ],
         ),
       );
@@ -193,108 +197,138 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final c = _controller();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.name),
-        actions: [
-          IconButton(
-            onPressed: c == null ? null : _syncNow,
-            icon: const Icon(Icons.sync),
-            tooltip: 'Sync Now',
+    return ValueListenableBuilder<BudgetHomeController?>(
+      valueListenable: widget.controllerListenable,
+      builder: (context, c, _) {
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(widget.name),
+            actions: [
+              IconButton(
+                onPressed: c == null ? null : () => _syncNow(c),
+                icon: const Icon(Icons.sync),
+                tooltip: 'Sync Now',
+              ),
+              IconButton(
+                onPressed: c == null ? null : _refresh,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Refresh',
+              ),
+              AppMenuButton(api: widget.api),
+            ],
           ),
-          IconButton(
-            onPressed: c == null ? null : _refresh,
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-          ),
-        ],
-      ),
-      body: c == null
-          ? const Center(child: Text('Budget not loaded yet'))
-          : Column(
-              children: [
-                _buildSyncBanner(c),
-                Expanded(
-                  child: RefreshIndicator(
-                    onRefresh: () async {
-                      _refresh();
-                      await _future;
-                    },
-                    child: FutureBuilder<DashboardData>(
-                      future: _future,
-                      builder: (context, snap) {
-                        if (snap.connectionState == ConnectionState.waiting) {
-                          return const Center(child: CircularProgressIndicator());
-                        }
-                        if (snap.hasError) {
-                          return ListView(
-                            padding: const EdgeInsets.all(16),
-                            children: [
-                              Text('Dashboard error: ${snap.error}', style: const TextStyle(color: Colors.redAccent)),
-                              const SizedBox(height: 12),
-                              FilledButton(onPressed: _refresh, child: const Text('Retry')),
-                            ],
-                          );
-                        }
+          body: c == null
+              ? const Center(child: Text('Budget not loaded yet'))
+              : Column(
+                  children: [
+                    _buildSyncBanner(c),
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: () async {
+                          _refresh();
+                        },
+                        child: FutureBuilder<DashboardData>(
+                          key: ValueKey('${c.hashCode}-$_refreshToken'),
+                          future: c.loadDashboardData(),
+                          builder: (context, snap) {
+                            if (snap.connectionState ==
+                                ConnectionState.waiting) {
+                              return const Center(
+                                child: CircularProgressIndicator(),
+                              );
+                            }
+                            if (snap.hasError) {
+                              return ListView(
+                                padding: const EdgeInsets.all(16),
+                                children: [
+                                  Text(
+                                    'Dashboard error: ${snap.error}',
+                                    style: const TextStyle(
+                                      color: Colors.redAccent,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  FilledButton(
+                                    onPressed: _refresh,
+                                    child: const Text('Retry'),
+                                  ),
+                                ],
+                              );
+                            }
 
-                        final data = snap.data;
-                        if (data == null) {
-                          return const Center(child: Text('No data'));
-                        }
+                            final data = snap.data;
+                            if (data == null) {
+                              return const Center(child: Text('No data'));
+                            }
 
-                        return ListView(
-                          padding: const EdgeInsets.all(16),
-                          children: [
-                            Row(
+                            return ListView(
+                              padding: const EdgeInsets.all(16),
                               children: [
-                                Expanded(
-                                  child: Text(
-                                    'Pinned categories (this month)',
-                                    style: Theme.of(context).textTheme.titleMedium,
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        'Pinned categories (this month)',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleMedium,
+                                      ),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => _editPins(c, data),
+                                      icon: const Icon(Icons.edit, size: 18),
+                                      label: const Text('Edit'),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                if (data.pinnedCategories.isEmpty)
+                                  const Text('No pinned categories yet.'),
+                                for (final p in data.pinnedCategories)
+                                  Card(
+                                    child: ListTile(
+                                      title: Text(p.name),
+                                      trailing: Text(
+                                        _fmtMoney(p.spentThisMonthMilli),
+                                      ),
+                                    ),
                                   ),
+                                const SizedBox(height: 18),
+                                Text(
+                                  'Recent transactions',
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.titleMedium,
                                 ),
-                                TextButton.icon(
-                                  onPressed: () => _editPins(data),
-                                  icon: const Icon(Icons.edit, size: 18),
-                                  label: const Text('Edit'),
-                                ),
+                                const SizedBox(height: 8),
+                                if (data.recentTransactions.isEmpty)
+                                  const Text('No transactions yet.'),
+                                for (final t in data.recentTransactions)
+                                  Card(
+                                    child: ListTile(
+                                      title: Text(
+                                        t.description.isEmpty
+                                            ? '(no description)'
+                                            : t.description,
+                                      ),
+                                      subtitle: Text(
+                                        '${_fmtDate(t.date)}'
+                                        '${t.categoryName == null ? '' : ' • ${t.categoryName}'}'
+                                        '${t.accountName == null ? '' : ' • ${t.accountName}'}',
+                                      ),
+                                      trailing: Text(_fmtMoney(t.amountMilli)),
+                                    ),
+                                  ),
                               ],
-                            ),
-                            const SizedBox(height: 8),
-                            if (data.pinnedCategories.isEmpty) const Text('No pinned categories yet.'),
-                            for (final p in data.pinnedCategories)
-                              Card(
-                                child: ListTile(
-                                  title: Text(p.name),
-                                  trailing: Text(_fmtMoney(p.spentThisMonthMilli)),
-                                ),
-                              ),
-                            const SizedBox(height: 18),
-                            Text('Recent transactions', style: Theme.of(context).textTheme.titleMedium),
-                            const SizedBox(height: 8),
-                            if (data.recentTransactions.isEmpty) const Text('No transactions yet.'),
-                            for (final t in data.recentTransactions)
-                              Card(
-                                child: ListTile(
-                                  title: Text(t.description.isEmpty ? '(no description)' : t.description),
-                                  subtitle: Text(
-                                    '${_fmtDate(t.date)}'
-                                    '${t.categoryName == null ? '' : ' • ${t.categoryName}'}'
-                                    '${t.accountName == null ? '' : ' • ${t.accountName}'}',
-                                  ),
-                                  trailing: Text(_fmtMoney(t.amountMilli)),
-                                ),
-                              ),
-                          ],
-                        );
-                      },
+                            );
+                          },
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
+        );
+      },
     );
   }
 }
