@@ -1,4 +1,7 @@
+// ignore_for_file: deprecated_member_use
+
 import 'dart:isolate';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -11,6 +14,12 @@ import '../sync/pb/sync.pb.dart' as pb;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
+
+import '../ui/app_spacing.dart';
+import '../ui/widgets/account_row.dart';
+import '../ui/widgets/app_empty_state.dart';
+import '../ui/widgets/app_skeleton.dart';
+import '../ui/widgets/transaction_row.dart';
 
 class BudgetHomeScreen extends StatefulWidget {
   const BudgetHomeScreen({
@@ -1311,7 +1320,7 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                       ),
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String?>(
-                        value: category,
+                        initialValue: category,
                         items: catChoices,
                         decoration: const InputDecoration(
                           labelText: 'Category',
@@ -1417,23 +1426,24 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
               },
             ),
             body: _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? ListView(
+                    children: const [
+                      SizedBox(height: 8),
+                      AppSkeletonListTile(),
+                      AppSkeletonListTile(),
+                      AppSkeletonListTile(),
+                      AppSkeletonListTile(),
+                      AppSkeletonListTile(),
+                    ],
+                  )
                 : _error != null
-                ? Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          _error!,
-                          style: const TextStyle(color: Colors.redAccent),
-                        ),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: _load,
-                          child: const Text('Retry'),
-                        ),
-                      ],
+                ? AppEmptyState(
+                    title: 'Couldn\'t open budget',
+                    message: _error,
+                    icon: Icons.cloud_off,
+                    action: FilledButton(
+                      onPressed: () => _load(),
+                      child: const Text('Retry'),
                     ),
                   )
                 : Column(
@@ -1892,6 +1902,14 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
   }
 
   Widget _buildBudget() {
+    if (_categories.isEmpty) {
+      return const AppEmptyState(
+        title: 'No budget categories yet',
+        message: 'Sync your budget to pull categories from the server.',
+        icon: Icons.category_outlined,
+      );
+    }
+
     // Group categories by cat_group.
     final byGroup = <String, List<Map<String, Object?>>>{};
     for (final c in _categories) {
@@ -1900,54 +1918,79 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     }
 
     return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
-        const Padding(
-          padding: EdgeInsets.all(12),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.md,
+            0,
+            AppSpacing.md,
+            8,
+          ),
           child: Text(
             'Budget (this month)',
-            style: TextStyle(color: Colors.grey),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
-        for (final g in _categoryGroups) ...[
+        for (final g in _categoryGroups)
           Builder(
             builder: (context) {
               final gid = (g['id'] as String?) ?? '';
+              final groupName = (g['name'] as String?) ?? '';
               final cats = byGroup[gid] ?? const <Map<String, Object?>>[];
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  ListTile(
-                    title: Text(
-                      (g['name'] as String?) ?? '',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    subtitle: Text('${cats.length} categories'),
-                  ),
-                  for (final c in cats)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: FutureBuilder<int>(
-                        future: _spentThisMonthForCategory(
-                          (c['id'] as String?) ?? '',
+              if (cats.isEmpty) return const SizedBox.shrink();
+
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.md,
+                  0,
+                  AppSpacing.md,
+                  12,
+                ),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        ListTile(
+                          title: Text(
+                            groupName,
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          subtitle: Text('${cats.length} categories'),
                         ),
-                        builder: (context, snap) {
-                          final spent = snap.data ?? 0;
-                          return ListTile(
-                            dense: true,
-                            title: Text((c['name'] as String?) ?? ''),
-                            subtitle: const Text('Spent (this month)'),
-                            trailing: Text(_fmtMoney(spent)),
-                          );
-                        },
-                      ),
+                        const Divider(height: 1),
+                        for (final c in cats)
+                          FutureBuilder<int>(
+                            future: _spentThisMonthForCategory(
+                              (c['id'] as String?) ?? '',
+                            ),
+                            builder: (context, snap) {
+                              final spent = snap.data ?? 0;
+                              return ListTile(
+                                dense: true,
+                                title: Text((c['name'] as String?) ?? ''),
+                                subtitle: const Text('Spent this month'),
+                                trailing: Text(
+                                  _fmtMoney(spent),
+                                  style: Theme.of(context).textTheme.titleSmall
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              );
+                            },
+                          ),
+                      ],
                     ),
-                  const Divider(height: 1),
-                ],
+                  ),
+                ),
               );
             },
           ),
-        ],
       ],
     );
   }
