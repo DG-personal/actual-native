@@ -64,12 +64,20 @@ class DashboardCategory {
   DashboardCategory({
     required this.id,
     required this.name,
-    required this.spentThisMonthMilli,
+    required this.budgetedThisMonthCents,
+    required this.spentThisMonthCents,
   });
 
   final String id;
   final String name;
-  final int spentThisMonthMilli;
+
+  /// Budgeted/assigned amount for the current month (cents).
+  final int budgetedThisMonthCents;
+
+  /// Spent activity for the current month (cents). In Actual this is typically negative.
+  final int spentThisMonthCents;
+
+  int get availableThisMonthCents => budgetedThisMonthCents + spentThisMonthCents;
 }
 
 class DashboardTx {
@@ -716,16 +724,30 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
           orElse: () => {'name': id},
         );
         final name = (cat['name'] as String?) ?? id;
+
+        final now = DateTime.now();
+        final start = _monthStartInt(now);
+        final end = _monthEndInt(now);
+
         final spent = _transactions
             .where((t) => t['category'] == id)
+            .where((t) {
+              final d = (t['date'] as num?)?.toInt() ?? 0;
+              return d >= start && d <= end;
+            })
             .fold<int>(
               0,
               (sum, t) => sum + ((t['amount'] as num?)?.toInt() ?? 0),
             );
+
+        // Demo: fixed $100 budget.
+        const budgeted = 10000;
+
         return DashboardCategory(
           id: id,
           name: name,
-          spentThisMonthMilli: spent,
+          budgetedThisMonthCents: budgeted,
+          spentThisMonthCents: spent,
         );
       }).toList();
 
@@ -794,6 +816,67 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         ? 'NULL'
         : effectivePins.map((_) => '?').join(',');
 
+    // Budgeted/assigned by category for the current month.
+    final monthKey = (now.year * 100) + now.month; // YYYYMM
+    final monthIso = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-01';
+
+    Future<List<Map<String, Object?>>> tryBudgetQuery(Object monthParam) async {
+      return db.rawQuery(
+        'SELECT category as category, COALESCE(SUM(amount), 0) as budgeted '
+        'FROM zero_budgets '
+        'WHERE tombstone = 0 AND month = ? '
+        'GROUP BY category',
+        [monthParam],
+      );
+    }
+
+    var budgetRows = <Map<String, Object?>>[];
+    for (final m in <Object>[monthKey, start, monthIso]) {
+      try {
+        budgetRows = await tryBudgetQuery(m);
+        if (budgetRows.isNotEmpty) break;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    // Fallback if `month` column name differs.
+    if (budgetRows.isEmpty) {
+      try {
+        final cols = await _tableColumns(db, 'zero_budgets');
+        final monthCol = cols.contains('month')
+            ? 'month'
+            : (cols.contains('date') ? 'date' : (cols.contains('start') ? 'start' : null));
+        final catCol = cols.contains('category')
+            ? 'category'
+            : (cols.contains('cat') ? 'cat' : null);
+
+        if (monthCol != null && catCol != null && cols.contains('amount')) {
+          for (final m in <Object>[monthKey, start, monthIso]) {
+            try {
+              budgetRows = await db.rawQuery(
+                'SELECT $catCol as category, COALESCE(SUM(amount), 0) as budgeted '
+                'FROM zero_budgets '
+                'WHERE tombstone = 0 AND $monthCol = ? '
+                'GROUP BY $catCol',
+                [m],
+              );
+              if (budgetRows.isNotEmpty) break;
+            } catch (_) {
+              continue;
+            }
+          }
+        }
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    final budgetedByCat = <String, int>{
+      for (final r in budgetRows)
+        (r['category'] as String? ?? ''): (r['budgeted'] as num?)?.toInt() ?? 0,
+    }..remove('');
+
     final pinnedRows = effectivePins.isEmpty
         ? <Map<String, Object?>>[]
         : await db.rawQuery(
@@ -811,7 +894,8 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
           (r) => DashboardCategory(
             id: r['id'] as String,
             name: (r['name'] as String?) ?? '',
-            spentThisMonthMilli: (r['spent'] as num?)?.toInt() ?? 0,
+            budgetedThisMonthCents: budgetedByCat[(r['id'] as String)] ?? 0,
+            spentThisMonthCents: (r['spent'] as num?)?.toInt() ?? 0,
           ),
         )
         .toList();

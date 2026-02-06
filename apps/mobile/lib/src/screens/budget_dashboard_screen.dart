@@ -286,10 +286,120 @@ class _BudgetDashboardScreenState extends State<BudgetDashboardScreen> {
                                   const Text('No pinned categories yet.'),
                                 for (final p in data.pinnedCategories)
                                   Card(
-                                    child: ListTile(
-                                      title: Text(p.name),
-                                      trailing: Text(
-                                        _fmtMoney(p.spentThisMonthMilli),
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        16,
+                                        12,
+                                        16,
+                                        12,
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  p.name,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .titleSmall
+                                                      ?.copyWith(
+                                                        fontWeight:
+                                                            FontWeight.w800,
+                                                      ),
+                                                ),
+                                              ),
+                                              Text(
+                                                _fmtMoney(
+                                                  p.availableThisMonthCents,
+                                                ),
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleSmall
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                    ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 10),
+                                          Builder(
+                                            builder: (context) {
+                                              final budgeted =
+                                                  p.budgetedThisMonthCents;
+                                              final spent = p.spentThisMonthCents;
+
+                                              // Spent is typically negative; treat used as positive.
+                                              final used = spent < 0
+                                                  ? (-spent)
+                                                  : spent;
+
+                                              final denom = budgeted <= 0
+                                                  ? 1
+                                                  : budgeted;
+                                              var pct = used / denom;
+                                              if (pct.isNaN) pct = 0;
+                                              pct = pct.clamp(0, 1);
+
+                                              final overspent =
+                                                  p.availableThisMonthCents < 0;
+                                              final near = !overspent && pct >= 0.85;
+
+                                              final barColor = overspent
+                                                  ? Colors.redAccent
+                                                  : (near
+                                                        ? Colors.orange
+                                                        : Theme.of(context)
+                                                            .colorScheme
+                                                            .primary);
+
+                                              return Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.stretch,
+                                                children: [
+                                                  ClipRRect(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                      8,
+                                                    ),
+                                                    child:
+                                                        LinearProgressIndicator(
+                                                      minHeight: 10,
+                                                      value: budgeted <= 0
+                                                          ? 0
+                                                          : pct,
+                                                      backgroundColor:
+                                                          Theme.of(context)
+                                                              .colorScheme
+                                                              .surfaceContainerHighest,
+                                                      valueColor:
+                                                          AlwaysStoppedAnimation(
+                                                        barColor,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    'Budgeted ${_fmtMoney(budgeted)} • Spent ${_fmtMoney(spent)}',
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodySmall
+                                                        ?.copyWith(
+                                                          color: Theme.of(
+                                                                    context,
+                                                                  )
+                                                              .colorScheme
+                                                              .onSurfaceVariant,
+                                                        ),
+                                                  ),
+                                                ],
+                                              );
+                                            },
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ),
