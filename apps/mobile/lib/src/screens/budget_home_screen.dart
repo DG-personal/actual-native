@@ -111,6 +111,30 @@ class DashboardData {
   final List<DashboardCategoryChoice> allCategories;
 }
 
+class _BudgetMonthVm {
+  _BudgetMonthVm({
+    required this.monthLabel,
+    required this.uncategorizedCount,
+    required this.cashTotal,
+    required this.totalBudgeted,
+    required this.totalSpent,
+    required this.totalAvailable,
+    required this.toBeBudgeted,
+    required this.budgetedByCategory,
+    required this.spentByCategory,
+  });
+
+  final String monthLabel;
+  final int uncategorizedCount;
+  final int cashTotal;
+  final int totalBudgeted;
+  final int totalSpent;
+  final int totalAvailable;
+  final int toBeBudgeted;
+  final Map<String, int> budgetedByCategory;
+  final Map<String, int> spentByCategory;
+}
+
 class _SyncEnvPayload {
   const _SyncEnvPayload({required this.isEncrypted, required this.content});
 
@@ -1382,94 +1406,60 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     amtCtl.dispose();
   }
 
+  DateTime _selectedBudgetMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
+
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 3,
-      child: Builder(
-        builder: (context) {
-          final tab = DefaultTabController.of(context);
-
-          return Scaffold(
-            appBar: AppBar(
-              title: Text(widget.name),
-              actions: [
-                IconButton(
-                  onPressed: (_loading || _syncing)
-                      ? null
-                      : () async {
-                          await syncNow();
-                        },
-                  icon: const Icon(Icons.sync),
-                  tooltip: 'Sync Now',
-                ),
-                IconButton(
-                  onPressed: (_loading || _syncing)
-                      ? null
-                      : () => _load(forceDownload: true),
-                  icon: const Icon(Icons.refresh),
-                  tooltip: 'Re-download',
-                ),
-                AppMenuButton(api: widget.api),
-              ],
-            ),
-            floatingActionButton: AnimatedBuilder(
-              animation: tab,
-              builder: (context, _) {
-                final show = !_loading && _error == null && tab.index == 1;
-                if (!show) return const SizedBox.shrink();
-                return FloatingActionButton(
-                  onPressed: () => _showTransactionForm(),
-                  tooltip: 'Add transaction',
-                  child: const Icon(Icons.add),
-                );
-              },
-            ),
-            body: _loading
-                ? ListView(
-                    children: const [
-                      SizedBox(height: 8),
-                      AppSkeletonListTile(),
-                      AppSkeletonListTile(),
-                      AppSkeletonListTile(),
-                      AppSkeletonListTile(),
-                      AppSkeletonListTile(),
-                    ],
-                  )
-                : _error != null
-                ? AppEmptyState(
-                    title: 'Couldn\'t open budget',
-                    message: _error,
-                    icon: Icons.cloud_off,
-                    action: FilledButton(
-                      onPressed: () => _load(),
-                      child: const Text('Retry'),
-                    ),
-                  )
-                : Column(
-                    children: [
-                      _buildSyncBanner(),
-                      const TabBar(
-                        tabs: [
-                          Tab(text: 'Accounts'),
-                          Tab(text: 'Transactions'),
-                          Tab(text: 'Budget'),
-                        ],
-                      ),
-                      Expanded(
-                        child: TabBarView(
-                          children: [
-                            _buildAccounts(),
-                            _buildTransactions(),
-                            _buildBudget(),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-          );
-        },
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.name),
+        actions: [
+          IconButton(
+            onPressed: (_loading || _syncing)
+                ? null
+                : () async {
+                    await syncNow();
+                  },
+            icon: const Icon(Icons.sync),
+            tooltip: 'Sync Now',
+          ),
+          IconButton(
+            onPressed: (_loading || _syncing)
+                ? null
+                : () => _load(forceDownload: true),
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Re-download',
+          ),
+          AppMenuButton(api: widget.api),
+        ],
       ),
+      body: _loading
+          ? ListView(
+              children: const [
+                SizedBox(height: 8),
+                AppSkeletonListTile(),
+                AppSkeletonListTile(),
+                AppSkeletonListTile(),
+                AppSkeletonListTile(),
+                AppSkeletonListTile(),
+              ],
+            )
+          : _error != null
+              ? AppEmptyState(
+                  title: 'Couldn\'t open budget',
+                  message: _error,
+                  icon: Icons.cloud_off,
+                  action: FilledButton(
+                    onPressed: () => _load(),
+                    child: const Text('Retry'),
+                  ),
+                )
+              : Column(
+                  children: [
+                    _buildSyncBanner(),
+                    Expanded(child: _buildBudget()),
+                  ],
+                ),
     );
   }
 
@@ -1901,6 +1891,189 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     return (rows.first['spent'] as num?)?.toInt() ?? 0;
   }
 
+  int _monthKeyInt(DateTime month) => (month.year * 100) + month.month;
+
+  Future<Map<String, int>> _budgetedByCategoryForMonth(DateTime month) async {
+    if (widget.demoMode) {
+      // Demo: pretend every non-income category has $100 budgeted.
+      final out = <String, int>{};
+      for (final c in _categories) {
+        final isIncome = (c['is_income'] as num?)?.toInt() ?? 0;
+        if (isIncome != 0) continue;
+        final id = (c['id'] as String?) ?? '';
+        if (id.isEmpty) continue;
+        out[id] = 10000;
+      }
+      return out;
+    }
+
+    final db = _budget?.db;
+    if (db == null) return <String, int>{};
+
+    // Try a few common Actual schemas for the month column format.
+    final monthKey = _monthKeyInt(month); // YYYYMM
+    final monthStart = _monthStartInt(month);
+    final monthIso = '${month.year.toString().padLeft(4, '0')}-${month.month.toString().padLeft(2, '0')}-01';
+
+    Future<List<Map<String, Object?>>> tryQuery(Object monthParam) async {
+      return db.rawQuery(
+        'SELECT category as category, COALESCE(SUM(amount), 0) as budgeted '
+        'FROM zero_budgets '
+        'WHERE tombstone = 0 AND month = ? '
+        'GROUP BY category',
+        [monthParam],
+      );
+    }
+
+    final attempts = <Object>[monthKey, monthStart, monthIso];
+
+    for (final m in attempts) {
+      try {
+        final rows = await tryQuery(m);
+        if (rows.isNotEmpty) {
+          return {
+            for (final r in rows)
+              (r['category'] as String? ?? ''): (r['budgeted'] as num?)?.toInt() ?? 0,
+          }..remove('');
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+
+    // Fallback: if the month column isn't called `month`, try to detect it.
+    try {
+      final cols = await _tableColumns(db, 'zero_budgets');
+      final monthCol = cols.contains('month')
+          ? 'month'
+          : (cols.contains('date') ? 'date' : (cols.contains('start') ? 'start' : null));
+      final catCol = cols.contains('category')
+          ? 'category'
+          : (cols.contains('cat') ? 'cat' : null);
+      if (monthCol == null || catCol == null || !cols.contains('amount')) {
+        return <String, int>{};
+      }
+
+      for (final m in attempts) {
+        try {
+          final rows = await db.rawQuery(
+            'SELECT $catCol as category, COALESCE(SUM(amount), 0) as budgeted '
+            'FROM zero_budgets '
+            'WHERE tombstone = 0 AND $monthCol = ? '
+            'GROUP BY $catCol',
+            [m],
+          );
+          if (rows.isNotEmpty) {
+            return {
+              for (final r in rows)
+                (r['category'] as String? ?? ''): (r['budgeted'] as num?)?.toInt() ?? 0,
+            }..remove('');
+          }
+        } catch (_) {
+          continue;
+        }
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    return <String, int>{};
+  }
+
+  Future<int> _spentForCategoryMonth({
+    required String categoryId,
+    required DateTime month,
+  }) async {
+    if (widget.demoMode) {
+      // Demo: reuse current demo tx list but scope by month match.
+      final start = _monthStartInt(month);
+      final end = _monthEndInt(month);
+      return _transactions
+          .where((t) => t['category'] == categoryId)
+          .where((t) {
+            final d = (t['date'] as num?)?.toInt() ?? 0;
+            return d >= start && d <= end;
+          })
+          .fold<int>(0, (sum, t) => sum + ((t['amount'] as num?)?.toInt() ?? 0));
+    }
+
+    final db = _budget?.db;
+    if (db == null) return 0;
+
+    final start = _monthStartInt(month);
+    final end = _monthEndInt(month);
+
+    final rows = await db.rawQuery(
+      'SELECT COALESCE(SUM(amount), 0) as spent '
+      'FROM transactions '
+      'WHERE tombstone = 0 AND category = ? AND date BETWEEN ? AND ?',
+      [categoryId, start, end],
+    );
+
+    return (rows.first['spent'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<int> _uncategorizedCountForMonth(DateTime month) async {
+    if (widget.demoMode) {
+      final start = _monthStartInt(month);
+      final end = _monthEndInt(month);
+      return _transactions
+          .where((t) {
+            final d = (t['date'] as num?)?.toInt() ?? 0;
+            return d >= start && d <= end;
+          })
+          .where((t) => (t['category'] == null) || (t['category'] as String?) == '')
+          .length;
+    }
+
+    final db = _budget?.db;
+    if (db == null) return 0;
+
+    final start = _monthStartInt(month);
+    final end = _monthEndInt(month);
+
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) as c '
+      'FROM transactions '
+      'WHERE tombstone = 0 '
+      'AND date BETWEEN ? AND ? '
+      "AND (category IS NULL OR category = '')",
+      [start, end],
+    );
+
+    return (rows.first['c'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<int> _onBudgetCashTotal() async {
+    if (widget.demoMode) {
+      // Sum only non-offbudget accounts.
+      return _accounts
+          .where((a) => ((a['offbudget'] as num?)?.toInt() ?? 0) == 0)
+          .fold<int>(
+            0,
+            (sum, a) =>
+                sum + (((a['balance_available'] ?? a['balance_current']) as num?)?.toInt() ?? 0),
+          );
+    }
+
+    final db = _budget?.db;
+    if (db == null) return 0;
+
+    final acctCols = await _tableColumns(db, 'accounts');
+    final balCol = acctCols.contains('balance_available')
+        ? 'balance_available'
+        : (acctCols.contains('balance_current') ? 'balance_current' : null);
+    if (balCol == null) return 0;
+
+    final rows = await db.rawQuery(
+      'SELECT COALESCE(SUM($balCol), 0) as total '
+      'FROM accounts '
+      'WHERE tombstone = 0 AND offbudget = 0 AND closed = 0',
+    );
+
+    return (rows.first['total'] as num?)?.toInt() ?? 0;
+  }
+
   Widget _buildBudget() {
     if (_categories.isEmpty) {
       return const AppEmptyState(
@@ -1917,81 +2090,272 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
       byGroup.putIfAbsent(g, () => []).add(c);
     }
 
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.md,
-            0,
-            AppSpacing.md,
-            8,
-          ),
-          child: Text(
-            'Budget (this month)',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
-        for (final g in _categoryGroups)
-          Builder(
-            builder: (context) {
-              final gid = (g['id'] as String?) ?? '';
-              final groupName = (g['name'] as String?) ?? '';
-              final cats = byGroup[gid] ?? const <Map<String, Object?>>[];
+    final month = _selectedBudgetMonth;
+    final monthLabel = DateFormat('MMMM yyyy').format(month);
 
-              if (cats.isEmpty) return const SizedBox.shrink();
+    Future<_BudgetMonthVm> loadVm() async {
+      final budgetedByCat = await _budgetedByCategoryForMonth(month);
+      final uncategorized = await _uncategorizedCountForMonth(month);
+      final cashTotal = await _onBudgetCashTotal();
 
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  AppSpacing.md,
-                  0,
-                  AppSpacing.md,
-                  12,
+      // Compute totals only for non-income categories.
+      var totalBudgeted = 0;
+      var totalSpent = 0;
+      final spentByCat = <String, int>{};
+
+      for (final c in _categories) {
+        final isIncome = (c['is_income'] as num?)?.toInt() ?? 0;
+        if (isIncome != 0) continue;
+        final id = (c['id'] as String?) ?? '';
+        if (id.isEmpty) continue;
+
+        final b = budgetedByCat[id] ?? 0;
+        final s = await _spentForCategoryMonth(categoryId: id, month: month);
+        spentByCat[id] = s;
+        totalBudgeted += b;
+        totalSpent += s;
+      }
+
+      // Activity/spent is usually negative in Actual; keep totals as-is.
+      final totalAvailable = totalBudgeted + totalSpent;
+      final toBeBudgeted = cashTotal - totalBudgeted;
+
+      return _BudgetMonthVm(
+        monthLabel: monthLabel,
+        uncategorizedCount: uncategorized,
+        cashTotal: cashTotal,
+        totalBudgeted: totalBudgeted,
+        totalSpent: totalSpent,
+        totalAvailable: totalAvailable,
+        toBeBudgeted: toBeBudgeted,
+        budgetedByCategory: budgetedByCat,
+        spentByCategory: spentByCat,
+      );
+    }
+
+    return FutureBuilder<_BudgetMonthVm>(
+      future: loadVm(),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return ListView(
+            children: const [
+              SizedBox(height: 12),
+              AppSkeletonListTile(),
+              AppSkeletonListTile(),
+              AppSkeletonListTile(),
+            ],
+          );
+        }
+
+        final vm = snap.data!;
+        final tbbColor = vm.toBeBudgeted < 0
+            ? Colors.redAccent
+            : Theme.of(context).colorScheme.primary;
+
+        Widget pill({required String label, required String value, Color? valueColor}) {
+          return Expanded(
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      value,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: valueColor,
+                      ),
+                    ),
+                  ],
                 ),
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        ListTile(
-                          title: Text(
-                            groupName,
-                            style: Theme.of(context).textTheme.titleSmall
-                                ?.copyWith(fontWeight: FontWeight.w800),
-                          ),
-                          subtitle: Text('${cats.length} categories'),
+              ),
+            ),
+          );
+        }
+
+        return ListView(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _selectedBudgetMonth = DateTime(
+                          _selectedBudgetMonth.year,
+                          _selectedBudgetMonth.month - 1,
+                          1,
+                        );
+                      });
+                    },
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: Text(
+                        vm.monthLabel,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
                         ),
-                        const Divider(height: 1),
-                        for (final c in cats)
-                          FutureBuilder<int>(
-                            future: _spentThisMonthForCategory(
-                              (c['id'] as String?) ?? '',
-                            ),
-                            builder: (context, snap) {
-                              final spent = snap.data ?? 0;
-                              return ListTile(
-                                dense: true,
-                                title: Text((c['name'] as String?) ?? ''),
-                                subtitle: const Text('Spent this month'),
-                                trailing: Text(
-                                  _fmtMoney(spent),
-                                  style: Theme.of(context).textTheme.titleSmall
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              );
-                            },
-                          ),
-                      ],
+                      ),
                     ),
                   ),
+                  IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _selectedBudgetMonth = DateTime(
+                          _selectedBudgetMonth.year,
+                          _selectedBudgetMonth.month + 1,
+                          1,
+                        );
+                      });
+                    },
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ],
+              ),
+            ),
+
+            Padding(
+              padding: const EdgeInsets.fromLTRB(AppSpacing.md, 4, AppSpacing.md, 8),
+              child: Card(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: ListTile(
+                  leading: const Icon(Icons.label_outline),
+                  title: Text('${vm.uncategorizedCount} transactions need categorization'),
+                  subtitle: const Text('Tap to review and categorize'),
+                  onTap: () {
+                    // TODO: route to filtered tx list.
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Categorize flow coming next.')),
+                    );
+                  },
                 ),
-              );
-            },
-          ),
-      ],
+              ),
+            ),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: Row(
+                children: [
+                  pill(
+                    label: vm.toBeBudgeted < 0 ? 'Over budget' : 'To budget',
+                    value: _fmtMoney(vm.toBeBudgeted),
+                    valueColor: tbbColor,
+                  ),
+                  const SizedBox(width: 8),
+                  pill(label: 'Total balance', value: _fmtMoney(vm.cashTotal)),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(AppSpacing.md, 8, AppSpacing.md, 8),
+              child: Row(
+                children: [
+                  pill(label: 'Budgeted', value: _fmtMoney(vm.totalBudgeted)),
+                  const SizedBox(width: 8),
+                  pill(label: 'Spent', value: _fmtMoney(vm.totalSpent)),
+                  const SizedBox(width: 8),
+                  pill(label: 'Balance', value: _fmtMoney(vm.totalAvailable)),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 4),
+
+            for (final g in _categoryGroups)
+              Builder(
+                builder: (context) {
+                  final gid = (g['id'] as String?) ?? '';
+                  final groupName = (g['name'] as String?) ?? '';
+                  final cats = byGroup[gid] ?? const <Map<String, Object?>>[];
+                  if (cats.isEmpty) return const SizedBox.shrink();
+
+                  int groupBudgeted = 0;
+                  int groupSpent = 0;
+                  for (final c in cats) {
+                    final id = (c['id'] as String?) ?? '';
+                    groupBudgeted += vm.budgetedByCategory[id] ?? 0;
+                    groupSpent += vm.spentByCategory[id] ?? 0;
+                  }
+                  final groupAvail = groupBudgeted + groupSpent;
+
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, 12),
+                    child: Card(
+                      child: ExpansionTile(
+                        title: Text(
+                          groupName,
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        subtitle: Text(
+                          'Budgeted ${_fmtMoney(groupBudgeted)} • Spent ${_fmtMoney(groupSpent)} • Balance ${_fmtMoney(groupAvail)}',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        children: [
+                          const Divider(height: 1),
+                          for (final c in cats)
+                            Builder(
+                              builder: (context) {
+                                final id = (c['id'] as String?) ?? '';
+                                final name = (c['name'] as String?) ?? '';
+                                final b = vm.budgetedByCategory[id] ?? 0;
+                                final s = vm.spentByCategory[id] ?? 0;
+                                final a = b + s;
+
+                                final unassigned = b == 0;
+                                final availColor = a < 0
+                                    ? Colors.redAccent
+                                    : Theme.of(context).colorScheme.onSurface;
+
+                                return ListTile(
+                                  title: Text(
+                                    name,
+                                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    'Budgeted ${_fmtMoney(b)} • Spent ${_fmtMoney(s)} • Balance ${_fmtMoney(a)}',
+                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: unassigned
+                                          ? Colors.orange
+                                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  trailing: Text(
+                                    _fmtMoney(a),
+                                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                      fontWeight: FontWeight.w900,
+                                      color: availColor,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+          ],
+        );
+      },
     );
   }
 }
