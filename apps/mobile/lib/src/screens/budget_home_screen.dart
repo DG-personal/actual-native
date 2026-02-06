@@ -10,6 +10,7 @@ import '../sync/actual_sync_client.dart';
 import '../sync/pb/sync.pb.dart' as pb;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite/sqflite.dart';
 
 class BudgetHomeScreen extends StatefulWidget {
   const BudgetHomeScreen({
@@ -1051,6 +1052,23 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     });
   }
 
+  static String _uuidV4() {
+    final rnd = Random.secure();
+    final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+    // Per RFC 4122.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    String hex(int n) => n.toRadixString(16).padLeft(2, '0');
+
+    final b = bytes;
+    return '${hex(b[0])}${hex(b[1])}${hex(b[2])}${hex(b[3])}'
+        '-${hex(b[4])}${hex(b[5])}'
+        '-${hex(b[6])}${hex(b[7])}'
+        '-${hex(b[8])}${hex(b[9])}'
+        '-${hex(b[10])}${hex(b[11])}${hex(b[12])}${hex(b[13])}${hex(b[14])}${hex(b[15])}';
+  }
+
   final _moneyFmt = NumberFormat('#,##0.00');
 
   String _fmtMoney(Object? v) {
@@ -1072,72 +1090,376 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     return '$y-${m.toString().padLeft(2, '0')}-${d.toString().padLeft(2, '0')}';
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.name),
-        actions: [
-          IconButton(
-            onPressed: (_loading || _syncing)
-                ? null
-                : () async {
-                    await syncNow();
-                  },
-            icon: const Icon(Icons.sync),
-            tooltip: 'Sync Now',
-          ),
-          IconButton(
-            onPressed: (_loading || _syncing)
-                ? null
-                : () => _load(forceDownload: true),
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Re-download',
-          ),
-          AppMenuButton(api: widget.api),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-          ? Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.redAccent),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(onPressed: _load, child: const Text('Retry')),
-                ],
-              ),
-            )
-          : DefaultTabController(
-              length: 3,
-              child: Column(
-                children: [
-                  _buildSyncBanner(),
-                  const TabBar(
-                    tabs: [
-                      Tab(text: 'Accounts'),
-                      Tab(text: 'Transactions'),
-                      Tab(text: 'Budget'),
+  int _dateToInt(DateTime d) => (d.year * 10000) + (d.month * 100) + d.day;
+
+  int _parseAmountToCents(String s) {
+    // Accept things like "12.34", "-5", "$1,234.56".
+    final cleaned = s.trim().replaceAll(RegExp(r'[^0-9\.-]'), '');
+    if (cleaned.isEmpty || cleaned == '-' || cleaned == '.') {
+      throw const FormatException('Invalid amount');
+    }
+    final value = double.parse(cleaned);
+    return (value * 100.0).round();
+  }
+
+  Future<void> _upsertTransaction({
+    required String id,
+    required String acct,
+    required int date,
+    required int amount,
+    required String description,
+    required String notes,
+    required String? category,
+    required bool isNew,
+  }) async {
+    if (widget.demoMode) {
+      setState(() {
+        final row = <String, Object?>{
+          'id': id,
+          'acct': acct,
+          'date': date,
+          'amount': amount,
+          'description': description,
+          'notes': notes,
+          'category': category,
+        };
+        if (isNew) {
+          _transactions = [row, ..._transactions];
+        } else {
+          _transactions = _transactions
+              .map((t) => (t['id'] == id) ? {...t, ...row} : t)
+              .toList();
+        }
+      });
+      return;
+    }
+
+    final db = _budget?.db;
+    if (db == null) {
+      throw Exception('Local DB not open');
+    }
+
+    final cols = await _tableColumns(db, 'transactions');
+
+    // Build a payload of only columns that exist.
+    final row = <String, Object?>{
+      'id': id,
+      if (cols.contains('acct')) 'acct': acct,
+      if (cols.contains('date')) 'date': date,
+      if (cols.contains('amount')) 'amount': amount,
+      if (cols.contains('description')) 'description': description,
+      if (cols.contains('notes')) 'notes': notes,
+      if (cols.contains('category')) 'category': category,
+      if (cols.contains('tombstone')) 'tombstone': 0,
+      if (cols.contains('cleared')) 'cleared': 0,
+      if (cols.contains('reconciled')) 'reconciled': 0,
+      if (cols.contains('sort_order'))
+        'sort_order': DateTime.now().millisecondsSinceEpoch.toDouble(),
+    };
+
+    if (isNew) {
+      await db.insert(
+        'transactions',
+        row,
+        conflictAlgorithm: ConflictAlgorithm.abort,
+      );
+    } else {
+      await db.update(
+        'transactions',
+        row,
+        where: 'id = ?',
+        whereArgs: [id],
+        conflictAlgorithm: ConflictAlgorithm.abort,
+      );
+    }
+
+    // Refresh list for the selected account.
+    final selected = _selectedAccountId;
+    if (selected != null) {
+      await _loadTransactions(selected);
+    }
+  }
+
+  Future<void> _showTransactionForm({Map<String, Object?>? tx}) async {
+    final selectedAcct = _selectedAccountId;
+    final acct = (tx?['acct'] as String?) ?? selectedAcct;
+
+    if (acct == null || acct.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select an account first.')),
+        );
+      }
+      return;
+    }
+
+    final isNew = tx == null;
+    final id = (tx?['id'] as String?) ?? _uuidV4();
+
+    final initialDateInt = (tx?['date'] as num?)?.toInt();
+    final now = DateTime.now();
+    final initialDate = (initialDateInt == null)
+        ? DateTime(now.year, now.month, now.day)
+        : DateTime(
+            initialDateInt ~/ 10000,
+            (initialDateInt ~/ 100) % 100,
+            initialDateInt % 100,
+          );
+
+    final descCtl = TextEditingController(
+      text: (tx?['description'] as String?) ?? '',
+    );
+    final notesCtl = TextEditingController(
+      text: (tx?['notes'] as String?) ?? '',
+    );
+
+    final initialAmt = (tx?['amount'] as num?)?.toInt();
+    final amtCtl = TextEditingController(
+      text: initialAmt == null ? '' : (initialAmt / 100.0).toStringAsFixed(2),
+    );
+
+    String? category = (tx?['category'] as String?);
+    DateTime date = initialDate;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return SafeArea(
+          child: StatefulBuilder(
+            builder: (context, setModalState) {
+              final catChoices = <DropdownMenuItem<String?>>[
+                const DropdownMenuItem(
+                  value: null,
+                  child: Text('(uncategorized)'),
+                ),
+                ..._categories
+                    .map((c) {
+                      final cid = c['id'] as String?;
+                      final name = (c['name'] as String?) ?? '';
+                      return DropdownMenuItem<String?>(
+                        value: cid,
+                        child: Text(name),
+                      );
+                    })
+                    .where((i) => (i.value ?? '').isNotEmpty),
+              ];
+
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        isNew ? 'Add transaction' : 'Edit transaction',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.calendar_today),
+                              label: Text(_fmtDate(_dateToInt(date))),
+                              onPressed: () async {
+                                final picked = await showDatePicker(
+                                  context: context,
+                                  firstDate: DateTime(2000, 1, 1),
+                                  lastDate: DateTime(2100, 12, 31),
+                                  initialDate: date,
+                                );
+                                if (picked != null) {
+                                  setModalState(() => date = picked);
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: amtCtl,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                    signed: true,
+                                  ),
+                              decoration: const InputDecoration(
+                                labelText: 'Amount (e.g. -12.34)',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: descCtl,
+                        decoration: const InputDecoration(
+                          labelText: 'Description',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String?>(
+                        value: category,
+                        items: catChoices,
+                        decoration: const InputDecoration(
+                          labelText: 'Category',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (v) => setModalState(() => category = v),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: notesCtl,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Notes',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton(
+                        onPressed: () async {
+                          try {
+                            final cents = _parseAmountToCents(amtCtl.text);
+                            await _upsertTransaction(
+                              id: id,
+                              acct: acct,
+                              date: _dateToInt(date),
+                              amount: cents,
+                              description: descCtl.text.trim(),
+                              notes: notesCtl.text,
+                              category: category,
+                              isNew: isNew,
+                            );
+                            if (context.mounted) Navigator.of(context).pop();
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Save failed: $e')),
+                            );
+                          }
+                        },
+                        child: const Text('Save'),
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Cancel'),
+                      ),
                     ],
                   ),
-                  Expanded(
-                    child: TabBarView(
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    descCtl.dispose();
+    notesCtl.dispose();
+    amtCtl.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3,
+      child: Builder(
+        builder: (context) {
+          final tab = DefaultTabController.of(context);
+
+          return Scaffold(
+            appBar: AppBar(
+              title: Text(widget.name),
+              actions: [
+                IconButton(
+                  onPressed: (_loading || _syncing)
+                      ? null
+                      : () async {
+                          await syncNow();
+                        },
+                  icon: const Icon(Icons.sync),
+                  tooltip: 'Sync Now',
+                ),
+                IconButton(
+                  onPressed: (_loading || _syncing)
+                      ? null
+                      : () => _load(forceDownload: true),
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Re-download',
+                ),
+                AppMenuButton(api: widget.api),
+              ],
+            ),
+            floatingActionButton: AnimatedBuilder(
+              animation: tab,
+              builder: (context, _) {
+                final show = !_loading && _error == null && tab.index == 1;
+                if (!show) return const SizedBox.shrink();
+                return FloatingActionButton(
+                  onPressed: () => _showTransactionForm(),
+                  tooltip: 'Add transaction',
+                  child: const Icon(Icons.add),
+                );
+              },
+            ),
+            body: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                ? Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _buildAccounts(),
-                        _buildTransactions(),
-                        _buildBudget(),
+                        Text(
+                          _error!,
+                          style: const TextStyle(color: Colors.redAccent),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton(
+                          onPressed: _load,
+                          child: const Text('Retry'),
+                        ),
                       ],
                     ),
+                  )
+                : Column(
+                    children: [
+                      _buildSyncBanner(),
+                      const TabBar(
+                        tabs: [
+                          Tab(text: 'Accounts'),
+                          Tab(text: 'Transactions'),
+                          Tab(text: 'Budget'),
+                        ],
+                      ),
+                      Expanded(
+                        child: TabBarView(
+                          children: [
+                            _buildAccounts(),
+                            _buildTransactions(),
+                            _buildBudget(),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            ),
+          );
+        },
+      ),
     );
   }
 
@@ -1203,9 +1525,31 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
   }
 
   Widget _buildAccounts() {
+    if (_accounts.isEmpty) {
+      return const AppEmptyState(
+        title: 'No accounts yet',
+        message: 'Sync the budget to pull accounts from the server.',
+        icon: Icons.account_balance_wallet_outlined,
+      );
+    }
+
+    IconData iconForType(String type) {
+      switch (type) {
+        case 'credit':
+          return Icons.credit_card;
+        case 'depository':
+          return Icons.account_balance;
+        case 'investment':
+          return Icons.show_chart;
+        default:
+          return Icons.account_balance_wallet_outlined;
+      }
+    }
+
     return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 12),
       itemCount: _accounts.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
+      separatorBuilder: (context, index) => const SizedBox(height: 8),
       itemBuilder: (context, i) {
         final a = _accounts[i];
         final id = a['id'] as String?;
@@ -1222,31 +1566,32 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         if (offbudget != 0) subtitleParts.add('Off budget');
         if (closed != 0) subtitleParts.add('Closed');
 
-        return ListTile(
-          title: Text(name),
-          subtitle: Text(
-            subtitleParts.where((s) => s.trim().isNotEmpty).join(' • '),
+        final subtitle = subtitleParts
+            .where((s) => s.trim().isNotEmpty)
+            .join(' • ');
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+          child: Card(
+            child: AccountRow(
+              name: name,
+              subtitle: subtitle,
+              balanceLabel: balCurrent,
+              secondaryBalanceLabel:
+                  (balAvail != null && balAvail != balCurrent)
+                  ? 'Avail $balAvail'
+                  : null,
+              leadingIcon: iconForType(type),
+              onTap: id == null
+                  ? null
+                  : () async {
+                      final controller = DefaultTabController.of(context);
+                      await _loadTransactions(id);
+                      if (!mounted) return;
+                      controller.animateTo(1);
+                    },
+            ),
           ),
-          trailing: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(balCurrent),
-              if (balAvail != null && balAvail != balCurrent)
-                Text(
-                  'Avail $balAvail',
-                  style: const TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-            ],
-          ),
-          onTap: id == null
-              ? null
-              : () async {
-                  final controller = DefaultTabController.of(context);
-                  await _loadTransactions(id);
-                  if (!mounted) return;
-                  controller.animateTo(1);
-                },
         );
       },
     );
@@ -1254,21 +1599,55 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
 
   Widget _buildTransactions() {
     final selected = _selectedAccountId;
-    final header = selected == null
-        ? 'No account selected'
-        : 'Account: ${_accounts.firstWhere((a) => a['id'] == selected, orElse: () => {'name': selected})['name']}';
+
+    if (selected == null) {
+      return const AppEmptyState(
+        title: 'Pick an account',
+        message:
+            'Choose an account from the Accounts tab to view transactions.',
+        icon: Icons.filter_list,
+      );
+    }
+
+    final accountName = _accounts
+        .firstWhere(
+          (a) => a['id'] == selected,
+          orElse: () => {'name': selected},
+        )['name']
+        ?.toString();
+
+    if (_transactions.isEmpty) {
+      return AppEmptyState(
+        title: 'No transactions',
+        message: 'Nothing to show for ${accountName ?? 'this account'} yet.',
+        icon: Icons.receipt_long,
+      );
+    }
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(header, style: const TextStyle(color: Colors.grey)),
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.md,
+            12,
+            AppSpacing.md,
+            8,
+          ),
+          child: Text(
+            accountName == null
+                ? 'Transactions'
+                : 'Transactions • $accountName',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
-        const Divider(height: 1),
         Expanded(
           child: ListView.separated(
+            padding: const EdgeInsets.only(bottom: 12),
             itemCount: _transactions.length,
-            separatorBuilder: (context, index) => const Divider(height: 1),
+            separatorBuilder: (context, index) => const SizedBox(height: 8),
             itemBuilder: (context, i) {
               final t = _transactions[i];
               final txId = (t['id'] as String?) ?? '';
@@ -1284,7 +1663,7 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
 
               final dateRaw = t['date'];
               final date = _fmtDate(dateRaw);
-              final rawAmt = t['amount'];
+              final rawAmt = (t['amount'] as num?)?.toInt() ?? 0;
               final amt = _fmtMoney(rawAmt);
               final notes = (t['notes'] as String?) ?? '';
 
@@ -1296,7 +1675,6 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                       )['name']
                       as String?;
 
-              final accountName = (t['account_name'] as String?);
               final payeeName = (t['payee_name'] as String?);
 
               final titleText = (payeeName != null && payeeName.isNotEmpty)
@@ -1311,52 +1689,32 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
               if (cleared != null && cleared != 0) flags.add('C');
 
               final subtitleParts = <String>[date];
-              if (payeeName != null && payeeName.isNotEmpty) {
-                subtitleParts.add(payeeName);
-              }
               if (categoryName != null && categoryName.isNotEmpty) {
                 subtitleParts.add(categoryName);
               }
               if (flags.isNotEmpty) subtitleParts.add(flags.join(','));
 
-              final notesPreview = notes.trim();
-
-              return ListTile(
-                title: Text(titleText.isEmpty ? '(no description)' : titleText),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(subtitleParts.join(' • ')),
-                    if (notesPreview.isNotEmpty)
-                      Text(
-                        notesPreview,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.grey),
-                      ),
-                  ],
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                child: Card(
+                  child: TransactionRow(
+                    title: titleText.isEmpty ? '(no description)' : titleText,
+                    subtitle: subtitleParts.join(' • '),
+                    amountLabel: amt,
+                    amountCents: rawAmt,
+                    notesPreview: notes.trim().isEmpty ? null : notes.trim(),
+                    onTap: txId.isEmpty
+                        ? null
+                        : () => _showTransactionDetail(
+                            tx: t,
+                            dateLabel: date,
+                            amountLabel: amt,
+                            accountName: accountName,
+                            categoryName: categoryName,
+                            payeeName: payeeName,
+                          ),
+                  ),
                 ),
-                trailing: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(amt),
-                    Text(
-                      'raw: ${rawAmt ?? ''}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                  ],
-                ),
-                onTap: txId.isEmpty
-                    ? null
-                    : () => _showTransactionDetail(
-                        tx: t,
-                        dateLabel: date,
-                        amountLabel: amt,
-                        accountName: accountName,
-                        categoryName: categoryName,
-                        payeeName: payeeName,
-                      ),
               );
             },
           ),
@@ -1460,9 +1818,26 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Close'),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              Navigator.of(context).pop();
+                              _showTransactionForm(tx: tx);
+                            },
+                            icon: const Icon(Icons.edit),
+                            label: const Text('Edit'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('Close'),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
