@@ -19,9 +19,8 @@ class AppAmountText extends StatelessWidget {
     final theme = Theme.of(context);
     final isNegative = cents < 0;
 
-    final color = isNegative
-        ? theme.colorScheme.error
-        : theme.colorScheme.tertiary;
+    // Outflows are negative (red). Inflows should read as distinctly "green".
+    final color = isNegative ? theme.colorScheme.error : Colors.green.shade700;
 
     return Text(
       text,

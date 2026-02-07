@@ -143,6 +143,59 @@ class _BudgetMonthVm {
   final Map<String, int> spentByCategory;
 }
 
+class _Budget3Col extends StatelessWidget {
+  const _Budget3Col({
+    required this.leftLabel,
+    required this.leftValue,
+    required this.midLabel,
+    required this.midValue,
+    required this.rightLabel,
+    required this.rightValue,
+    this.emphasize = false,
+  });
+
+  final String leftLabel;
+  final String leftValue;
+  final String midLabel;
+  final String midValue;
+  final String rightLabel;
+  final String rightValue;
+  final bool emphasize;
+
+  Widget _cell(BuildContext context, String label, String value) {
+    final theme = Theme.of(context);
+    final labelStyle = theme.textTheme.labelSmall?.copyWith(
+      letterSpacing: 0.4,
+      color: emphasize ? Colors.orange : theme.colorScheme.onSurfaceVariant,
+      fontWeight: FontWeight.w700,
+    );
+    final valueStyle = theme.textTheme.bodySmall?.copyWith(
+      fontWeight: FontWeight.w800,
+      color: emphasize ? Colors.orange : theme.colorScheme.onSurface,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: labelStyle),
+        const SizedBox(height: 2),
+        Text(value, style: valueStyle),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: _cell(context, leftLabel, leftValue)),
+        Expanded(child: _cell(context, midLabel, midValue)),
+        Expanded(child: _cell(context, rightLabel, rightValue)),
+      ],
+    );
+  }
+}
+
 class _SyncEnvPayload {
   const _SyncEnvPayload({required this.isEncrypted, required this.content});
 
@@ -1514,6 +1567,62 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
             icon: const Icon(Icons.refresh),
             tooltip: 'Re-download',
           ),
+          IconButton(
+            onPressed: _loading
+                ? null
+                : () async {
+                    // Ensure freshest account list.
+                    await _reloadFromDb();
+                    if (!mounted) return;
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => _AccountsScreen(
+                          accounts: _accounts,
+                          fmtMoney: _fmtMoney,
+                          iconForType: _iconForAccountType,
+                          onOpenAccount: (acctId) async {
+                            final acct = _accounts.firstWhere(
+                              (a) => a['id'] == acctId,
+                              orElse: () => <String, Object?>{},
+                            );
+                            final name = (acct['name'] as String?) ?? 'Account';
+
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => _AccountDetailScreen(
+                                  accountId: acctId,
+                                  accountName: name,
+                                  currentBalanceCents:
+                                      ((acct['balance_available'] ?? acct['balance_current']) as num?)
+                                          ?.toInt() ??
+                                      0,
+                                  month: _selectedBudgetMonth,
+                                  fmtMoney: _fmtMoney,
+                                  fmtDate: _fmtDate,
+                                  query: (f) => _queryAccountTx(
+                                    acctId,
+                                    month: _selectedBudgetMonth,
+                                    filter: f,
+                                  ),
+                                  categories: _categories,
+                                  setCategory: (txId, categoryId) =>
+                                      _setTransactionCategory(txId, categoryId),
+                                  toggleCleared: (txId, v) =>
+                                      _setTransactionCleared(txId, v),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    );
+
+                    if (!mounted) return;
+                    setState(() {});
+                  },
+            icon: const Icon(Icons.account_balance_outlined),
+            tooltip: 'Accounts',
+          ),
           AppMenuButton(api: widget.api),
         ],
       ),
@@ -1608,6 +1717,19 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
     return const SizedBox.shrink();
   }
 
+  IconData _iconForAccountType(String type) {
+    switch (type) {
+      case 'credit':
+        return Icons.credit_card;
+      case 'depository':
+        return Icons.account_balance;
+      case 'investment':
+        return Icons.show_chart;
+      default:
+        return Icons.account_balance_wallet_outlined;
+    }
+  }
+
   Widget _buildAccounts() {
     if (_accounts.isEmpty) {
       return const AppEmptyState(
@@ -1615,19 +1737,6 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         message: 'Sync the budget to pull accounts from the server.',
         icon: Icons.account_balance_wallet_outlined,
       );
-    }
-
-    IconData iconForType(String type) {
-      switch (type) {
-        case 'credit':
-          return Icons.credit_card;
-        case 'depository':
-          return Icons.account_balance;
-        case 'investment':
-          return Icons.show_chart;
-        default:
-          return Icons.account_balance_wallet_outlined;
-      }
     }
 
     return ListView.separated(
@@ -1665,7 +1774,7 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                   (balAvail != null && balAvail != balCurrent)
                   ? 'Avail $balAvail'
                   : null,
-              leadingIcon: iconForType(type),
+              leadingIcon: _iconForAccountType(type),
               onTap: id == null
                   ? null
                   : () async {
@@ -2318,11 +2427,25 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                   leading: const Icon(Icons.label_outline),
                   title: Text('${vm.uncategorizedCount} transactions need categorization'),
                   subtitle: const Text('Tap to review and categorize'),
-                  onTap: () {
-                    // TODO: route to filtered tx list.
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Categorize flow coming next.')),
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => _UncategorizedTxScreen(
+                          title: 'Needs categorization',
+                          month: month,
+                          load: () => _queryUncategorizedTx(month),
+                          categories: _categories,
+                          fmtDate: _fmtDate,
+                          fmtMoney: _fmtMoney,
+                          setCategory: (txId, categoryId) =>
+                              _setTransactionCategory(txId, categoryId),
+                        ),
+                      ),
                     );
+
+                    // Refresh the budget totals + group rows after categorize.
+                    if (!mounted) return;
+                    setState(() {});
                   },
                 ),
               ),
@@ -2384,11 +2507,19 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                             fontWeight: FontWeight.w900,
                           ),
                         ),
-                        subtitle: Text(
-                          'Budgeted ${_fmtMoney(groupBudgeted)} • Spent ${_fmtMoney(groupSpent)} • Balance ${_fmtMoney(groupAvail)}',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
+                        subtitle: Row(
+                          children: [
+                            Expanded(
+                              child: _Budget3Col(
+                                leftLabel: 'BUDGETED',
+                                leftValue: _fmtMoney(groupBudgeted),
+                                midLabel: 'SPENT',
+                                midValue: _fmtMoney(groupSpent),
+                                rightLabel: 'BAL',
+                                rightValue: _fmtMoney(groupAvail),
+                              ),
+                            ),
+                          ],
                         ),
                         children: [
                           const Divider(height: 1),
@@ -2410,16 +2541,17 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                                   title: Text(
                                     name,
                                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                      fontWeight: FontWeight.w700,
+                                      fontWeight: FontWeight.w800,
                                     ),
                                   ),
-                                  subtitle: Text(
-                                    'Budgeted ${_fmtMoney(b)} • Spent ${_fmtMoney(s)} • Balance ${_fmtMoney(a)}',
-                                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                      color: unassigned
-                                          ? Colors.orange
-                                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                                    ),
+                                  subtitle: _Budget3Col(
+                                    leftLabel: 'BUDGETED',
+                                    leftValue: _fmtMoney(b),
+                                    midLabel: 'SPENT',
+                                    midValue: _fmtMoney(s),
+                                    rightLabel: 'BAL',
+                                    rightValue: _fmtMoney(a),
+                                    emphasize: unassigned,
                                   ),
                                   trailing: Text(
                                     _fmtMoney(a),
@@ -2440,6 +2572,611 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
           ],
         );
       },
+    );
+  }
+
+  Future<List<Map<String, Object?>>> _queryUncategorizedTx(DateTime month) async {
+    if (widget.demoMode) {
+      final start = _monthStartInt(month);
+      final end = _monthEndInt(month);
+      return _transactions
+          .where((t) {
+            final d = (t['date'] as num?)?.toInt() ?? 0;
+            return d >= start && d <= end;
+          })
+          .where((t) => (t['category'] == null) || (t['category'] as String?) == '')
+          .map((t) => Map<String, Object?>.from(t))
+          .toList();
+    }
+
+    final db = _budget?.db;
+    if (db == null) return <Map<String, Object?>>[];
+
+    final start = _monthStartInt(month);
+    final end = _monthEndInt(month);
+
+    final txCols = await _tableColumns(db, 'transactions');
+    final hasCleared = txCols.contains('cleared');
+
+    final rows = await db.rawQuery(
+      'SELECT t.id as id, t.date as date, t.amount as amount, t.description as description, '
+      't.notes as notes, t.category as category, t.acct as acct, a.name as account_name '
+      '${hasCleared ? ', t.cleared as cleared' : ''} '
+      'FROM transactions t '
+      'LEFT JOIN accounts a ON a.id = t.acct '
+      'WHERE t.tombstone = 0 '
+      'AND t.date BETWEEN ? AND ? '
+      "AND (t.category IS NULL OR t.category = '') "
+      'ORDER BY t.date DESC, t.sort_order DESC '
+      'LIMIT 250',
+      [start, end],
+    );
+
+    return rows;
+  }
+
+  Future<List<Map<String, Object?>>> _queryAccountTx(
+    String accountId, {
+    required DateTime month,
+    required _TxFilter filter,
+  }) async {
+    if (widget.demoMode) {
+      final start = _monthStartInt(month);
+      final end = _monthEndInt(month);
+      final base = _transactions
+          .where((t) => t['acct'] == accountId)
+          .where((t) {
+            final d = (t['date'] as num?)?.toInt() ?? 0;
+            return d >= start && d <= end;
+          })
+          .map((t) => Map<String, Object?>.from(t))
+          .toList();
+
+      bool ok(Map<String, Object?> t) {
+        switch (filter) {
+          case _TxFilter.all:
+            return true;
+          case _TxFilter.uncategorized:
+            return (t['category'] == null) || (t['category'] as String?) == '';
+          case _TxFilter.cleared:
+            return (t['cleared'] as num?)?.toInt() == 1;
+          case _TxFilter.uncleared:
+            return (t['cleared'] as num?)?.toInt() != 1;
+        }
+      }
+
+      return base.where(ok).toList();
+    }
+
+    final db = _budget?.db;
+    if (db == null) return <Map<String, Object?>>[];
+
+    final start = _monthStartInt(month);
+    final end = _monthEndInt(month);
+
+    final txCols = await _tableColumns(db, 'transactions');
+    final hasCleared = txCols.contains('cleared');
+
+    final whereParts = <String>[
+      't.tombstone = 0',
+      't.acct = ?',
+      't.date BETWEEN ? AND ?',
+    ];
+    final args = <Object?>[accountId, start, end];
+
+    if (filter == _TxFilter.uncategorized) {
+      whereParts.add("(t.category IS NULL OR t.category = '')");
+    }
+    if (filter == _TxFilter.cleared && hasCleared) {
+      whereParts.add('t.cleared = 1');
+    }
+    if (filter == _TxFilter.uncleared && hasCleared) {
+      whereParts.add('(t.cleared IS NULL OR t.cleared = 0)');
+    }
+
+    final rows = await db.rawQuery(
+      'SELECT t.id as id, t.date as date, t.amount as amount, t.description as description, '
+      't.notes as notes, t.category as category, t.acct as acct, a.name as account_name, c.name as category_name '
+      '${hasCleared ? ', t.cleared as cleared' : ''} '
+      'FROM transactions t '
+      'LEFT JOIN accounts a ON a.id = t.acct '
+      'LEFT JOIN categories c ON c.id = t.category '
+      'WHERE ${whereParts.join(' AND ')} '
+      'ORDER BY t.date DESC, t.sort_order DESC '
+      'LIMIT 300',
+      args,
+    );
+
+    return rows;
+  }
+
+  Future<void> _setTransactionCategory(String txId, String? categoryId) async {
+    // Optimistic refresh: update DB and then let callers refresh.
+    if (widget.demoMode) {
+      setState(() {
+        _transactions = _transactions
+            .map(
+              (t) => (t['id'] == txId)
+                  ? {...t, 'category': categoryId}
+                  : t,
+            )
+            .toList();
+      });
+      return;
+    }
+
+    final db = _budget?.db;
+    if (db == null) return;
+
+    final cols = await _tableColumns(db, 'transactions');
+    if (!cols.contains('category')) return;
+
+    await db.update(
+      'transactions',
+      {'category': categoryId},
+      where: 'id = ?',
+      whereArgs: [txId],
+    );
+  }
+
+  Future<void> _setTransactionCleared(String txId, bool cleared) async {
+    if (widget.demoMode) {
+      setState(() {
+        _transactions = _transactions
+            .map(
+              (t) => (t['id'] == txId)
+                  ? {...t, 'cleared': cleared ? 1 : 0}
+                  : t,
+            )
+            .toList();
+      });
+      return;
+    }
+
+    final db = _budget?.db;
+    if (db == null) return;
+
+    final cols = await _tableColumns(db, 'transactions');
+    if (!cols.contains('cleared')) return;
+
+    await db.update(
+      'transactions',
+      {'cleared': cleared ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [txId],
+    );
+  }
+}
+
+enum _TxFilter { all, uncategorized, cleared, uncleared }
+
+class _UncategorizedTxScreen extends StatefulWidget {
+  const _UncategorizedTxScreen({
+    required this.title,
+    required this.month,
+    required this.load,
+    required this.categories,
+    required this.fmtDate,
+    required this.fmtMoney,
+    required this.setCategory,
+  });
+
+  final String title;
+  final DateTime month;
+  final Future<List<Map<String, Object?>>> Function() load;
+  final List<Map<String, Object?>> categories;
+  final String Function(Object? v) fmtDate;
+  final String Function(Object? v) fmtMoney;
+  final Future<void> Function(String txId, String? categoryId) setCategory;
+
+  @override
+  State<_UncategorizedTxScreen> createState() => _UncategorizedTxScreenState();
+}
+
+class _UncategorizedTxScreenState extends State<_UncategorizedTxScreen> {
+  late Future<List<Map<String, Object?>>> _future = widget.load();
+
+  void _refresh() => setState(() => _future = widget.load());
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+      body: FutureBuilder<List<Map<String, Object?>>>(
+        future: _future,
+        builder: (context, snap) {
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final rows = snap.data!;
+          if (rows.isEmpty) {
+            return const Center(child: Text('Nothing to categorize 🎉'));
+          }
+
+          final catItems = <DropdownMenuItem<String?>>[
+            const DropdownMenuItem(value: null, child: Text('(uncategorized)')),
+            ...widget.categories
+                .where((c) => ((c['is_income'] as num?)?.toInt() ?? 0) == 0)
+                .map((c) {
+                  final id = c['id'] as String?;
+                  final name = (c['name'] as String?) ?? '';
+                  return DropdownMenuItem<String?>(
+                    value: id,
+                    child: Text(name),
+                  );
+                })
+                .where((i) => (i.value ?? '').isNotEmpty),
+          ];
+
+          return ListView.separated(
+            itemCount: rows.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, i) {
+              final t = rows[i];
+              final txId = (t['id'] as String?) ?? '';
+              final desc = (t['description'] as String?) ?? '';
+              final date = widget.fmtDate(t['date']);
+              final amount = widget.fmtMoney(t['amount']);
+              final acct = (t['account_name'] as String?) ?? '';
+              final currentCat = t['category'] as String?;
+
+              return ListTile(
+                title: Text(desc.isEmpty ? '(no description)' : desc),
+                subtitle: Text('$date${acct.isEmpty ? '' : ' • $acct'}'),
+                trailing: SizedBox(
+                  width: 210,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Expanded(
+                        child: DropdownButton<String?>(
+                          value: (currentCat?.isEmpty ?? true)
+                              ? null
+                              : currentCat,
+                          items: catItems,
+                          isExpanded: true,
+                          onChanged: (v) async {
+                            await widget.setCategory(txId, v);
+                            _refresh();
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(amount),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _AccountsScreen extends StatelessWidget {
+  const _AccountsScreen({
+    required this.accounts,
+    required this.fmtMoney,
+    required this.iconForType,
+    required this.onOpenAccount,
+  });
+
+  final List<Map<String, Object?>> accounts;
+  final String Function(Object? v) fmtMoney;
+  final IconData Function(String type) iconForType;
+  final Future<void> Function(String accountId) onOpenAccount;
+
+  @override
+  Widget build(BuildContext context) {
+    int sumWhere(bool Function(Map<String, Object?> a) pred) {
+      return accounts
+          .where(pred)
+          .fold<int>(
+            0,
+            (sum, a) => sum + (((a['balance_available'] ?? a['balance_current']) as num?)?.toInt() ?? 0),
+          );
+    }
+
+    final onBudgetTotal = sumWhere(
+      (a) => ((a['offbudget'] as num?)?.toInt() ?? 0) == 0 &&
+          ((a['closed'] as num?)?.toInt() ?? 0) == 0,
+    );
+    final offBudgetTotal = sumWhere(
+      (a) => ((a['offbudget'] as num?)?.toInt() ?? 0) != 0 &&
+          ((a['closed'] as num?)?.toInt() ?? 0) == 0,
+    );
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Accounts')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Totals',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(child: Text('On-budget')),
+                      Text(fmtMoney(onBudgetTotal)),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(child: Text('Off-budget')),
+                      Text(fmtMoney(offBudgetTotal)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          for (final a in accounts)
+            Builder(
+              builder: (context) {
+                final id = a['id'] as String?;
+                if (id == null || id.isEmpty) return const SizedBox.shrink();
+
+                final name = (a['name'] as String?) ?? '(unnamed)';
+                final type = (a['type'] as String?) ?? '';
+                final offbudget = (a['offbudget'] as num?)?.toInt() ?? 0;
+                final closed = (a['closed'] as num?)?.toInt() ?? 0;
+
+                final bal = fmtMoney(a['balance_available'] ?? a['balance_current']);
+
+                final badges = <String>[];
+                if (offbudget != 0) badges.add('Off-budget');
+                if (closed != 0) badges.add('Closed');
+
+                return Card(
+                  child: ListTile(
+                    leading: Icon(iconForType(type)),
+                    title: Text(name),
+                    subtitle: badges.isEmpty ? null : Text(badges.join(' • ')),
+                    trailing: Text(
+                      bal,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    onTap: () => onOpenAccount(id),
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AccountDetailScreen extends StatefulWidget {
+  const _AccountDetailScreen({
+    required this.accountId,
+    required this.accountName,
+    required this.currentBalanceCents,
+    required this.month,
+    required this.fmtMoney,
+    required this.fmtDate,
+    required this.query,
+    required this.categories,
+    required this.setCategory,
+    required this.toggleCleared,
+  });
+
+  final String accountId;
+  final String accountName;
+  final int currentBalanceCents;
+  final DateTime month;
+  final String Function(Object? v) fmtMoney;
+  final String Function(Object? v) fmtDate;
+  final Future<List<Map<String, Object?>>> Function(_TxFilter filter) query;
+  final List<Map<String, Object?>> categories;
+  final Future<void> Function(String txId, String? categoryId) setCategory;
+  final Future<void> Function(String txId, bool cleared) toggleCleared;
+
+  @override
+  State<_AccountDetailScreen> createState() => _AccountDetailScreenState();
+}
+
+class _AccountDetailScreenState extends State<_AccountDetailScreen> {
+  _TxFilter _filter = _TxFilter.all;
+  late Future<List<Map<String, Object?>>> _future = widget.query(_filter);
+
+  void _refresh() => setState(() => _future = widget.query(_filter));
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.accountName),
+        actions: [
+          IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+      body: FutureBuilder<List<Map<String, Object?>>>(
+        future: _future,
+        builder: (context, snap) {
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final rows = snap.data!;
+          final balance = widget.currentBalanceCents;
+
+          final catItems = <DropdownMenuItem<String?>>[
+            const DropdownMenuItem(value: null, child: Text('(uncategorized)')),
+            ...widget.categories
+                .where((c) => ((c['is_income'] as num?)?.toInt() ?? 0) == 0)
+                .map((c) {
+                  final id = c['id'] as String?;
+                  final name = (c['name'] as String?) ?? '';
+                  return DropdownMenuItem<String?>(
+                    value: id,
+                    child: Text(name),
+                  );
+                })
+                .where((i) => (i.value ?? '').isNotEmpty),
+          ];
+
+          Widget chip(_TxFilter f, String label) {
+            final selected = _filter == f;
+            return ChoiceChip(
+              label: Text(label),
+              selected: selected,
+              onSelected: (_) {
+                setState(() {
+                  _filter = f;
+                  _future = widget.query(_filter);
+                });
+              },
+            );
+          }
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Current balance',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    // Balance is supplied on the accounts list; for now we keep header label.
+                    Text(
+                      widget.fmtMoney(balance),
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    chip(_TxFilter.all, 'All'),
+                    const SizedBox(width: 8),
+                    chip(_TxFilter.uncategorized, 'Needs category'),
+                    const SizedBox(width: 8),
+                    chip(_TxFilter.cleared, 'Cleared'),
+                    const SizedBox(width: 8),
+                    chip(_TxFilter.uncleared, 'Uncleared'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: rows.isEmpty
+                    ? const Center(child: Text('No transactions'))
+                    : ListView.separated(
+                        itemCount: rows.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, i) {
+                          final t = rows[i];
+                          final txId = (t['id'] as String?) ?? '';
+                          final desc = (t['description'] as String?) ?? '';
+                          final date = widget.fmtDate(t['date']);
+                          final amount = widget.fmtMoney(t['amount']);
+                          final catName = (t['category_name'] as String?) ?? '';
+                          final currentCat = (t['category'] as String?);
+                          final cleared = ((t['cleared'] as num?)?.toInt() ?? 0) != 0;
+
+                          return ListTile(
+                            title: Text(desc.isEmpty ? '(no description)' : desc),
+                            subtitle: Text('$date${catName.isEmpty ? '' : ' • $catName'}'),
+                            leading: InkWell(
+                              onTap: () async {
+                                await widget.toggleCleared(txId, !cleared);
+                                _refresh();
+                              },
+                              child: Container(
+                                width: 26,
+                                height: 26,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: cleared
+                                      ? Theme.of(context).colorScheme.primary
+                                      : Colors.transparent,
+                                  border: Border.all(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                                ),
+                                child: Text(
+                                  'C',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    color: cleared
+                                        ? Colors.white
+                                        : Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            trailing: SizedBox(
+                              width: 220,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Expanded(
+                                    child: DropdownButton<String?>(
+                                      value: (currentCat?.isEmpty ?? true)
+                                          ? null
+                                          : currentCat,
+                                      items: catItems,
+                                      isExpanded: true,
+                                      onChanged: (v) async {
+                                        await widget.setCategory(txId, v);
+                                        _refresh();
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(amount),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
