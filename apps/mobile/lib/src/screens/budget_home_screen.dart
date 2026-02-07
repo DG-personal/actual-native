@@ -143,54 +143,68 @@ class _BudgetMonthVm {
   final Map<String, int> spentByCategory;
 }
 
-class _Budget3Col extends StatelessWidget {
-  const _Budget3Col({
-    required this.leftLabel,
-    required this.leftValue,
-    required this.midLabel,
-    required this.midValue,
-    required this.rightLabel,
-    required this.rightValue,
-    this.emphasize = false,
-  });
+class _BudgetTableHeader extends StatelessWidget {
+  const _BudgetTableHeader({required this.left, required this.budgeted, required this.spent, required this.balance});
 
-  final String leftLabel;
-  final String leftValue;
-  final String midLabel;
-  final String midValue;
-  final String rightLabel;
-  final String rightValue;
-  final bool emphasize;
-
-  Widget _cell(BuildContext context, String label, String value) {
-    final theme = Theme.of(context);
-    final labelStyle = theme.textTheme.labelSmall?.copyWith(
-      letterSpacing: 0.4,
-      color: emphasize ? Colors.orange : theme.colorScheme.onSurfaceVariant,
-      fontWeight: FontWeight.w700,
-    );
-    final valueStyle = theme.textTheme.bodySmall?.copyWith(
-      fontWeight: FontWeight.w800,
-      color: emphasize ? Colors.orange : theme.colorScheme.onSurface,
-    );
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: labelStyle),
-        const SizedBox(height: 2),
-        Text(value, style: valueStyle),
-      ],
-    );
-  }
+  final String left;
+  final String budgeted;
+  final String spent;
+  final String balance;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.labelSmall?.copyWith(
+      letterSpacing: 0.6,
+      fontWeight: FontWeight.w800,
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Row(
+        children: [
+          Expanded(child: Text(left, style: style)),
+          SizedBox(width: 84, child: Text(budgeted, style: style, textAlign: TextAlign.right)),
+          const SizedBox(width: 10),
+          SizedBox(width: 84, child: Text(spent, style: style, textAlign: TextAlign.right)),
+          const SizedBox(width: 10),
+          SizedBox(width: 84, child: Text(balance, style: style, textAlign: TextAlign.right)),
+        ],
+      ),
+    );
+  }
+}
+
+class _BudgetTableRow extends StatelessWidget {
+  const _BudgetTableRow({
+    required this.budgeted,
+    required this.spent,
+    required this.balance,
+    this.emphasize = false,
+  });
+
+  final String budgeted;
+  final String spent;
+  final String balance;
+  final bool emphasize;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.bodySmall?.copyWith(
+      fontWeight: emphasize ? FontWeight.w900 : FontWeight.w800,
+      color: emphasize ? Colors.orange : theme.colorScheme.onSurfaceVariant,
+    );
+
     return Row(
       children: [
-        Expanded(child: _cell(context, leftLabel, leftValue)),
-        Expanded(child: _cell(context, midLabel, midValue)),
-        Expanded(child: _cell(context, rightLabel, rightValue)),
+        const Spacer(),
+        SizedBox(width: 84, child: Text(budgeted, style: style, textAlign: TextAlign.right)),
+        const SizedBox(width: 10),
+        SizedBox(width: 84, child: Text(spent, style: style, textAlign: TextAlign.right)),
+        const SizedBox(width: 10),
+        SizedBox(width: 84, child: Text(balance, style: style, textAlign: TextAlign.right)),
       ],
     );
   }
@@ -2525,6 +2539,13 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
 
             const SizedBox(height: 4),
 
+            const _BudgetTableHeader(
+              left: 'CATEGORY',
+              budgeted: 'BUDGETED',
+              spent: 'SPENT',
+              balance: 'BALANCE',
+            ),
+
             for (final g in _categoryGroups)
               Builder(
                 builder: (context) {
@@ -2555,13 +2576,10 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                         subtitle: Row(
                           children: [
                             Expanded(
-                              child: _Budget3Col(
-                                leftLabel: 'BUDGETED',
-                                leftValue: _fmtMoney(groupBudgeted),
-                                midLabel: 'SPENT',
-                                midValue: _fmtMoney(groupSpent),
-                                rightLabel: 'BAL',
-                                rightValue: _fmtMoney(groupAvail),
+                              child: _BudgetTableRow(
+                                budgeted: _fmtMoney(groupBudgeted),
+                                spent: _fmtMoney(groupSpent),
+                                balance: _fmtMoney(groupAvail),
                               ),
                             ),
                           ],
@@ -2589,13 +2607,10 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
                                       fontWeight: FontWeight.w800,
                                     ),
                                   ),
-                                  subtitle: _Budget3Col(
-                                    leftLabel: 'BUDGETED',
-                                    leftValue: _fmtMoney(b),
-                                    midLabel: 'SPENT',
-                                    midValue: _fmtMoney(s),
-                                    rightLabel: 'BAL',
-                                    rightValue: _fmtMoney(a),
+                                  subtitle: _BudgetTableRow(
+                                    budgeted: _fmtMoney(b),
+                                    spent: _fmtMoney(s),
+                                    balance: _fmtMoney(a),
                                     emphasize: unassigned,
                                   ),
                                   trailing: Text(
