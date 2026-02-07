@@ -953,12 +953,49 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
         )
         .toList();
 
+    bool isUuidLike(String s) {
+      final v = s.trim();
+      final r = RegExp(
+        r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+      );
+      return r.hasMatch(v);
+    }
+
+    final txCols = await _tableColumns(db, 'transactions');
+    final payeeCol = txCols.contains('payee')
+        ? 'payee'
+        : (txCols.contains('payee_id') ? 'payee_id' : null);
+
+    final hasPayeesTable = await _tableExists(db, 'payees');
+    final joinPayeeOnDescription =
+        payeeCol == null && hasPayeesTable && txCols.contains('description');
+
+    final hasPayees =
+        (payeeCol != null && hasPayeesTable) || joinPayeeOnDescription;
+
+    final select = <String>[
+      't.id as id',
+      't.date as date',
+      't.amount as amount',
+      't.description as description',
+      'a.name as account_name',
+      'c.name as category_name',
+      if (hasPayees) 'p.name as payee_name',
+    ].join(', ');
+
+    final joins = <String>[
+      'LEFT JOIN accounts a ON a.id = t.acct',
+      'LEFT JOIN categories c ON c.id = t.category',
+      if (hasPayees)
+        joinPayeeOnDescription
+            ? 'LEFT JOIN payees p ON p.id = t.description'
+            : 'LEFT JOIN payees p ON p.id = t.$payeeCol',
+    ].join(' ');
+
     final txRows = await db.rawQuery(
-      'SELECT t.id as id, t.date as date, t.amount as amount, t.description as description, '
-      'a.name as account_name, c.name as category_name '
+      'SELECT $select '
       'FROM transactions t '
-      'LEFT JOIN accounts a ON a.id = t.acct '
-      'LEFT JOIN categories c ON c.id = t.category '
+      '$joins '
       'WHERE t.tombstone = 0 '
       'ORDER BY t.date DESC, t.sort_order DESC '
       'LIMIT 15',
@@ -966,14 +1003,22 @@ class _BudgetHomeScreenState extends State<BudgetHomeScreen> {
 
     final recent = txRows
         .map(
-          (r) => DashboardTx(
-            id: r['id'] as String,
-            date: (r['date'] as num?)?.toInt() ?? 0,
-            amountMilli: (r['amount'] as num?)?.toInt() ?? 0,
-            description: (r['description'] as String?) ?? '',
-            accountName: r['account_name'] as String?,
-            categoryName: r['category_name'] as String?,
-          ),
+          (r) {
+            final desc = (r['description'] as String?) ?? '';
+            final payeeName = (r['payee_name'] as String?) ?? '';
+            final effectiveDesc = (desc.isEmpty || isUuidLike(desc))
+                ? (payeeName.isNotEmpty ? payeeName : desc)
+                : desc;
+
+            return DashboardTx(
+              id: r['id'] as String,
+              date: (r['date'] as num?)?.toInt() ?? 0,
+              amountMilli: (r['amount'] as num?)?.toInt() ?? 0,
+              description: effectiveDesc,
+              accountName: r['account_name'] as String?,
+              categoryName: r['category_name'] as String?,
+            );
+          },
         )
         .toList();
 
